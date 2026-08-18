@@ -1,0 +1,11 @@
+Django>=5.0,<5.1
+djangorestframework
+psycopg2-binary
+python-dotenv
+celery
+redis
+django-celery-beat
+requests
+python-telegram-bot
+groq
+django-cors-headers

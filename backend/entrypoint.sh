@@ -1,5 +1,8 @@
 #!/bin/bash
 set -e
 
-python manage.py migrate --noinput
+if [ "${RUN_MIGRATIONS:-false}" = "true" ]; then
+    python manage.py migrate --noinput
+fi
+
 exec "$@"

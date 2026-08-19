@@ -1,60 +1,75 @@
 services:
-  db:
-    image: postgres:16
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
-  redis:
-    image: redis:7-alpine
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-
   backend:
-    build: ./backend
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    user: "${UID}:${GID}"
     command: python manage.py runserver 0.0.0.0:8000
     volumes:
       - ./backend:/app
       - media_data:/app/media
     ports:
       - "8000:8000"
-    env_file: ./backend/.env
+    env_file:
+      - .env
     depends_on:
       db:
         condition: service_healthy
       redis:
+        condition: service_started
+
+  db:
+    image: postgres:17-alpine
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    env_file:
+      - .env
+    environment:
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  celery-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    user: "${UID}:${GID}"
+    command: celery -A config worker --loglevel=info
+    volumes:
+      - ./backend:/app
+    env_file:
+      - .env
+    depends_on:
+      db:
         condition: service_healthy
+      redis:
+        condition: service_started
 
-  celery_worker:
-    build: ./backend
-    command: celery -A config worker -l info
+  celery-beat:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    user: "${UID}:${GID}"
+    command: celery -A config beat --loglevel=info
     volumes:
       - ./backend:/app
-    env_file: ./backend/.env
+    env_file:
+      - .env
     depends_on:
-      - backend
-      - redis
-
-  celery_beat:
-    build: ./backend
-    command: celery -A config beat -l info
-    volumes:
-      - ./backend:/app
-    env_file: ./backend/.env
-    depends_on:
-      - backend
-      - redis
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
 
 volumes:
   postgres_data:

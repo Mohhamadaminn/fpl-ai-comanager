@@ -6,7 +6,7 @@ class Team(models.Model):
     fpl_id = models.PositiveIntegerField(unique=True)  # 'id' from FPL API
     name = models.CharField(max_length=100)
     short_name = models.CharField(max_length=10)
-    strength = models.PositiveSmallIntegerField(default=0)
+    strength = models.PositiveSmallIntegerField(null=True, blank=True, default=None)
 
     def __str__(self):
         return self.name

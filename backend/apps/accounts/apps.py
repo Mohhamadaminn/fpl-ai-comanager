@@ -1,6 +1,6 @@
 from django.apps import AppConfig
 
 
-class FplDataConfig(AppConfig):
+class AccountsConfig(AppConfig):
     default_auto_field = 'django.db.models.BigAutoField'
-    name = 'apps.fpl_data'
+    name = 'apps.accounts'

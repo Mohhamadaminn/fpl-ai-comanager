@@ -13,6 +13,7 @@ import os
 import sys
 from pathlib import Path
 from dotenv import load_dotenv
+from celery.schedules import crontab
 
 load_dotenv()
 
@@ -161,4 +162,16 @@ CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
 CELERY_BEAT_SCHEDULER = 'django_celery_beat.schedulers:DatabaseScheduler'
+
+
+CELERY_BEAT_SCHEDULE = {
+    "sync-fpl-bootstrap": {
+        "task": "fpl_data.tasks.sync_bootstrap_task",
+        "schedule": crontab(hour="*/6", minute=0),  # every 6 hours
+    },
+    "sync-fpl-live-stats": {
+        "task": "fpl_data.tasks.sync_live_stats_task",
+        "schedule": crontab(minute="*/5"),  # every 5 minutes
+    },
+}
 

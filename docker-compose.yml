@@ -5,6 +5,11 @@ services:
       dockerfile: Dockerfile
     user: "${UID}:${GID}"
     command: python manage.py runserver 0.0.0.0:8000
+    environment:
+      - HTTP_PROXY=socks5://host.docker.internal:1089
+      - HTTPS_PROXY=socks5://host.docker.internal:1089
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./backend:/app
       - media_data:/app/media
@@ -45,6 +50,11 @@ services:
       dockerfile: Dockerfile
     user: "${UID}:${GID}"
     command: celery -A config worker --loglevel=info
+    environment:
+      - HTTP_PROXY=socks5://host.docker.internal:1089
+      - HTTPS_PROXY=socks5://host.docker.internal:1089
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./backend:/app
     env_file:
@@ -61,6 +71,11 @@ services:
       dockerfile: Dockerfile
     user: "${UID}:${GID}"
     command: celery -A config beat --loglevel=info
+    environment:
+      - HTTP_PROXY=socks5://host.docker.internal:1089
+      - HTTPS_PROXY=socks5://host.docker.internal:1089
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./backend:/app
     env_file:

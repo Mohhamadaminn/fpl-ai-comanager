@@ -51,7 +51,9 @@ INSTALLED_APPS = [
     'corsheaders',
 
     'apps.fpl_data.apps.FplDataConfig',
-    "apps.accounts.apps.AccountsConfig",
+    'apps.accounts.apps.AccountsConfig',
+    'apps.predictions.apps.PredictionsConfig',
+
 ]
 
 MIDDLEWARE = [

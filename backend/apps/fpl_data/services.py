@@ -1,5 +1,5 @@
 import requests
-from .models import Team, Player, Gameweek, PlayerGameweekStat
+from .models import Team, Player, Gameweek, Fixture, PlayerGameweekStat
 
 FPL_BASE_URL = "https://fantasy.premierleague.com/api"
 
@@ -15,7 +15,12 @@ def sync_bootstrap_data():
             defaults={
                 "name": team_data["name"],
                 "short_name": team_data["short_name"],
-                "strength": team_data.get("strength"),
+                "strength_overall_home": team_data.get("strength_overall_home"),
+                "strength_overall_away": team_data.get("strength_overall_away"),
+                "strength_attack_home": team_data.get("strength_attack_home"),
+                "strength_attack_away": team_data.get("strength_attack_away"),
+                "strength_defence_home": team_data.get("strength_defence_home"),
+                "strength_defence_away": team_data.get("strength_defence_away"),
             },
         )
 
@@ -49,8 +54,40 @@ def sync_bootstrap_data():
                 "form": player_data["form"] or 0,
                 "total_points": player_data["total_points"],
                 "selected_by_percent": player_data["selected_by_percent"],
+                "expected_goals": player_data.get("expected_goals") or 0,
+                "expected_assists": player_data.get("expected_assists") or 0,
+                "expected_goal_involvements": player_data.get("expected_goal_involvements") or 0,
+                "ict_index": player_data.get("ict_index") or 0,
                 "status": player_data["status"],
+                "news": player_data.get("news", ""),
                 "chance_of_playing_next_round": player_data.get("chance_of_playing_next_round"),
+            },
+        )
+
+
+def sync_fixtures():
+    response = requests.get(f"{FPL_BASE_URL}/fixtures/")
+    response.raise_for_status()
+    data = response.json()
+
+    for fixture_data in data:
+        gameweek = None
+        if fixture_data.get("event"):
+            gameweek = Gameweek.objects.filter(fpl_id=fixture_data["event"]).first()
+
+        team_home = Team.objects.get(fpl_id=fixture_data["team_h"])
+        team_away = Team.objects.get(fpl_id=fixture_data["team_a"])
+
+        Fixture.objects.update_or_create(
+            fpl_id=fixture_data["id"],
+            defaults={
+                "gameweek": gameweek,
+                "team_home": team_home,
+                "team_away": team_away,
+                "difficulty_home": fixture_data.get("team_h_difficulty"),
+                "difficulty_away": fixture_data.get("team_a_difficulty"),
+                "kickoff_time": fixture_data.get("kickoff_time"),
+                "finished": fixture_data.get("finished", False),
             },
         )
 
@@ -77,6 +114,11 @@ def sync_live_gameweek_stats(gameweek_fpl_id: int):
                 "assists": stats["assists"],
                 "clean_sheets": stats["clean_sheets"],
                 "points": stats["total_points"],
+                "expected_goals": stats.get("expected_goals") or 0,
+                "expected_assists": stats.get("expected_assists") or 0,
+                "expected_goal_involvements": stats.get("expected_goal_involvements") or 0,
+                "bps": stats.get("bps", 0),
+                "ict_index": stats.get("ict_index") or 0,
                 "is_final": gameweek.finished,
             },
         )

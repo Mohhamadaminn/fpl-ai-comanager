@@ -6,7 +6,13 @@ class Team(models.Model):
     fpl_id = models.PositiveIntegerField(unique=True)  # 'id' from FPL API
     name = models.CharField(max_length=100)
     short_name = models.CharField(max_length=10)
-    strength = models.PositiveSmallIntegerField(null=True, blank=True, default=None)
+
+    strength_overall_home = models.PositiveSmallIntegerField(null=True, blank=True)
+    strength_overall_away = models.PositiveSmallIntegerField(null=True, blank=True)
+    strength_attack_home = models.PositiveSmallIntegerField(null=True, blank=True)
+    strength_attack_away = models.PositiveSmallIntegerField(null=True, blank=True)
+    strength_defence_home = models.PositiveSmallIntegerField(null=True, blank=True)
+    strength_defence_away = models.PositiveSmallIntegerField(null=True, blank=True)
 
     def __str__(self):
         return self.name
@@ -31,7 +37,14 @@ class Player(models.Model):
     total_points = models.IntegerField(default=0)
     selected_by_percent = models.DecimalField(max_digits=5, decimal_places=1, default=0)
 
-    status = models.CharField(max_length=1, default="a")  # a=available, i=injured, etc.
+    # Season-to-date underlying stats (from bootstrap-static)
+    expected_goals = models.DecimalField(max_digits=6, decimal_places=2, default=0)
+    expected_assists = models.DecimalField(max_digits=6, decimal_places=2, default=0)
+    expected_goal_involvements = models.DecimalField(max_digits=6, decimal_places=2, default=0)
+    ict_index = models.DecimalField(max_digits=6, decimal_places=1, default=0)
+
+    status = models.CharField(max_length=1, default="a")  # a=available, i=injured, d=doubtful, s=suspended, u=unavailable
+    news = models.CharField(max_length=255, blank=True, default="")
     chance_of_playing_next_round = models.PositiveSmallIntegerField(null=True, blank=True)
 
     updated_at = models.DateTimeField(auto_now=True)
@@ -54,6 +67,22 @@ class Gameweek(models.Model):
         return self.name
 
 
+class Fixture(models.Model):
+    """A single match between two teams, with per-side difficulty."""
+    fpl_id = models.PositiveIntegerField(unique=True)  # 'id' from FPL API
+    gameweek = models.ForeignKey(Gameweek, on_delete=models.CASCADE, related_name="fixtures", null=True, blank=True)
+    team_home = models.ForeignKey(Team, on_delete=models.CASCADE, related_name="home_fixtures")
+    team_away = models.ForeignKey(Team, on_delete=models.CASCADE, related_name="away_fixtures")
+
+    difficulty_home = models.PositiveSmallIntegerField(null=True, blank=True)  # FDR for home team
+    difficulty_away = models.PositiveSmallIntegerField(null=True, blank=True)  # FDR for away team
+    kickoff_time = models.DateTimeField(null=True, blank=True)
+    finished = models.BooleanField(default=False)
+
+    def __str__(self):
+        return f"{self.team_home.short_name} vs {self.team_away.short_name} (GW{self.gameweek_id})"
+
+
 class PlayerGameweekStat(models.Model):
     player = models.ForeignKey(Player, on_delete=models.CASCADE, related_name="gameweek_stats")
     gameweek = models.ForeignKey(Gameweek, on_delete=models.CASCADE, related_name="player_stats")
@@ -63,6 +92,12 @@ class PlayerGameweekStat(models.Model):
     assists = models.PositiveSmallIntegerField(default=0)
     clean_sheets = models.PositiveSmallIntegerField(default=0)
     points = models.SmallIntegerField(default=0)
+
+    expected_goals = models.DecimalField(max_digits=5, decimal_places=2, default=0)
+    expected_assists = models.DecimalField(max_digits=5, decimal_places=2, default=0)
+    expected_goal_involvements = models.DecimalField(max_digits=5, decimal_places=2, default=0)
+    bps = models.SmallIntegerField(default=0)
+    ict_index = models.DecimalField(max_digits=6, decimal_places=1, default=0)
 
     is_final = models.BooleanField(default=False)  # True once the gameweek is officially finished
     updated_at = models.DateTimeField(auto_now=True)

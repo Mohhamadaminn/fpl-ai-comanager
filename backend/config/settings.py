@@ -166,11 +166,11 @@ CELERY_BEAT_SCHEDULER = 'django_celery_beat.schedulers:DatabaseScheduler'
 
 CELERY_BEAT_SCHEDULE = {
     "sync-fpl-bootstrap": {
-        "task": "fpl_data.tasks.sync_bootstrap_task",
+        "task": "apps.fpl_data.tasks.sync_bootstrap_task",
         "schedule": crontab(hour="*/6", minute=0),  # every 6 hours
     },
     "sync-fpl-live-stats": {
-        "task": "fpl_data.tasks.sync_live_stats_task",
+        "task": "apps.fpl_data.tasks.sync_live_stats_task",
         "schedule": crontab(minute="*/5"),  # every 5 minutes
     },
 }

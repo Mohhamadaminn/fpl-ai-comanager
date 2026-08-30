@@ -1,91 +1,158 @@
 services:
+
   backend:
+
     build:
       context: ./backend
       dockerfile: Dockerfile
+
+      args:
+        HTTP_PROXY: http://host.docker.internal:8889
+        HTTPS_PROXY: http://host.docker.internal:8889
+
+      extra_hosts:
+         - "host.docker.internal:host-gateway"
+
     user: "${UID}:${GID}"
+
     command: python manage.py runserver 0.0.0.0:8000
-    environment:
-      - HTTP_PROXY=socks5://host.docker.internal:1089
-      - HTTPS_PROXY=socks5://host.docker.internal:1089
     extra_hosts:
       - "host.docker.internal:host-gateway"
+
+    environment:
+      HTTP_PROXY: http://host.docker.internal:8889
+      HTTPS_PROXY: http://host.docker.internal:8889
+      ALL_PROXY: socks5://host.docker.internal:1089
+      NO_PROXY: localhost,127.0.0.1,db,redis
+
     volumes:
       - ./backend:/app
       - media_data:/app/media
+
     ports:
       - "8000:8000"
+
     env_file:
       - .env
+
     depends_on:
       db:
         condition: service_healthy
+
       redis:
         condition: service_started
 
+
   db:
+
     image: postgres:17-alpine
+
     volumes:
       - postgres_data:/var/lib/postgresql/data
+
     env_file:
       - .env
+
     environment:
       POSTGRES_DB: ${DB_NAME}
       POSTGRES_USER: ${DB_USER}
       POSTGRES_PASSWORD: ${DB_PASSWORD}
+
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
       interval: 5s
       timeout: 5s
       retries: 5
 
+
   redis:
+
     image: redis:7-alpine
+
     ports:
       - "6379:6379"
 
+
   celery-worker:
+
     build:
       context: ./backend
       dockerfile: Dockerfile
+
+      args:
+        HTTP_PROXY: http://host.docker.internal:8889
+        HTTPS_PROXY: http://host.docker.internal:8889
+
+      extra_hosts:
+         - "host.docker.internal:host-gateway"
+
     user: "${UID}:${GID}"
+
     command: celery -A config worker --loglevel=info
-    environment:
-      - HTTP_PROXY=socks5://host.docker.internal:1089
-      - HTTPS_PROXY=socks5://host.docker.internal:1089
     extra_hosts:
       - "host.docker.internal:host-gateway"
+
+    environment:
+      HTTP_PROXY: http://host.docker.internal:8889
+      HTTPS_PROXY: http://host.docker.internal:8889
+      ALL_PROXY: socks5://host.docker.internal:1089
+      NO_PROXY: localhost,127.0.0.1,db,redis
     volumes:
       - ./backend:/app
+
     env_file:
       - .env
+
     depends_on:
       db:
         condition: service_healthy
+
       redis:
         condition: service_started
+
 
   celery-beat:
+
     build:
       context: ./backend
       dockerfile: Dockerfile
+
+      args:
+        HTTP_PROXY: http://host.docker.internal:8889
+        HTTPS_PROXY: http://host.docker.internal:8889
+
+      extra_hosts:
+        - "host.docker.internal:host-gateway"
+
     user: "${UID}:${GID}"
+
     command: celery -A config beat --loglevel=info
-    environment:
-      - HTTP_PROXY=socks5://host.docker.internal:1089
-      - HTTPS_PROXY=socks5://host.docker.internal:1089
+
     extra_hosts:
       - "host.docker.internal:host-gateway"
+
+    environment:
+      HTTP_PROXY: http://host.docker.internal:8889
+      HTTPS_PROXY: http://host.docker.internal:8889
+      ALL_PROXY: socks5://host.docker.internal:1089
+      NO_PROXY: localhost,127.0.0.1,db,redis
+
     volumes:
       - ./backend:/app
+
     env_file:
       - .env
+
     depends_on:
       db:
         condition: service_healthy
+
       redis:
         condition: service_started
 
+
 volumes:
+
   postgres_data:
+
   media_data:

@@ -1,4 +1,3 @@
-# apps/fpl_data/tasks.py
 from celery import shared_task
 from .services import sync_bootstrap_data, sync_live_gameweek_stats
 from .models import Gameweek

@@ -3,8 +3,8 @@ from django.db import models
 from decimal import Decimal
 from groq import Groq
 from django.conf import settings
-from apps.fpl_data.models import Player, Gameweek, Fixture
-from .models import AIPrediction
+from apps.fpl_data.models import Player, Gameweek, Fixture, PlayerGameweekStat
+from .models import AIPrediction, PredictionEvaluation
 
 client = Groq(api_key=settings.GROQ_API_KEY)
 
@@ -107,3 +107,42 @@ TASK — respond ONLY with valid JSON, no other text:
             "data_snapshot": {"players_considered": player_context},
         },
     )[0]
+
+
+def evaluate_gameweek(gameweek):
+    """After a gameweek finishes, score the AI's captain and transfer suggestions against real results."""
+    ai_prediction = AIPrediction.objects.filter(gameweek=gameweek).first()
+    if not ai_prediction:
+        return None
+
+    ai_captain_points = None
+    ai_was_correct_captain = None
+    if ai_prediction.suggested_captain:
+        stat = PlayerGameweekStat.objects.filter(
+            player=ai_prediction.suggested_captain, gameweek=gameweek, is_final=True
+        ).first()
+        if stat:
+            ai_captain_points = stat.points * 2  # captain doubles points in FPL
+            # "correct" here = captain actually returned positive points
+            ai_was_correct_captain = stat.points > 0
+
+    ai_transfer_delta = None
+    if ai_prediction.suggested_transfer_in and ai_prediction.suggested_transfer_out:
+        in_stat = PlayerGameweekStat.objects.filter(
+            player=ai_prediction.suggested_transfer_in, gameweek=gameweek, is_final=True
+        ).first()
+        out_stat = PlayerGameweekStat.objects.filter(
+            player=ai_prediction.suggested_transfer_out, gameweek=gameweek, is_final=True
+        ).first()
+        if in_stat and out_stat:
+            ai_transfer_delta = in_stat.points - out_stat.points
+
+    evaluation, _ = PredictionEvaluation.objects.update_or_create(
+        gameweek=gameweek,
+        defaults={
+            "ai_captain_points": ai_captain_points,
+            "ai_was_correct_captain": ai_was_correct_captain,
+            "ai_transfer_points_delta": ai_transfer_delta,
+        },
+    )
+    return evaluation

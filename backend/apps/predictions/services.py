@@ -93,7 +93,13 @@ TASK — respond ONLY with valid JSON, no other text:
         temperature=0.2,
     )
 
-    result = json.loads(response.choices[0].message.content)
+
+    raw_content = response.choices[0].message.content
+    try:
+        result = json.loads(raw_content)
+    except json.JSONDecodeError:
+        raise ValueError(f"AI returned invalid JSON: {raw_content[:500]}")
+    
 
     captain = Player.objects.filter(id=result["captain_id"]).first()
     transfer_in = Player.objects.filter(id=result.get("transfer_in_id")).first() if result.get("transfer_in_id") else None

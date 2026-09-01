@@ -1,5 +1,5 @@
 import requests
-from fpl_data.models import Player
+from apps.fpl_data.models import Player
 
 FPL_BASE_URL = "https://fantasy.premierleague.com/api"
 

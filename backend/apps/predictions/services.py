@@ -1,8 +1,8 @@
 import json
 
+from django.db import models
 from groq import Groq
 from django.conf import settings
-from django.db import models
 
 from apps.fpl_data.models import (
     Player,
@@ -11,6 +11,44 @@ from apps.fpl_data.models import (
     Gameweek,
 )
 from .models import AIPrediction, PredictionEvaluation
+
+
+PREDICTION_RESPONSE_SCHEMA = {
+    "name": "fpl_prediction",
+    "strict": True,
+    "schema": {
+        "type": "object",
+        "properties": {
+            "captain_id": {
+                "type": "integer",
+                "minimum": 1,
+            },
+            "captain_alternatives_considered": {
+                "type": "array",
+                "items": {
+                    "type": "integer",
+                    "minimum": 1,
+                },
+                "minItems": 2,
+            },
+            "transfer_in_id": {
+                "type": ["integer", "null"],
+                "minimum": 1,
+            },
+            "reasoning": {
+                "type": "string",
+                "minLength": 1,
+            },
+        },
+        "required": [
+            "captain_id",
+            "captain_alternatives_considered",
+            "transfer_in_id",
+            "reasoning",
+        ],
+        "additionalProperties": False,
+    },
+}
 
 
 client = Groq(api_key=settings.GROQ_API_KEY)
@@ -187,21 +225,17 @@ def _is_transfer_candidate(player, recent):
     if not recent["gameweeks"]:
         return False
 
-    # Player needs meaningful recent minutes.
-    if recent["minutes_total"] < 180:
+    games_available = len(recent["gameweeks"])
+    min_minutes = min(180, games_available * 60)  # ~60 min/game minimum, scaled to what's actually available
+
+
+    if recent["minutes_total"] < min_minutes:
         return False
 
-    # Prefer players who are actually playing regularly.
     if recent["minutes_per_game"] < 45:
         return False
 
-    # If the player has almost no underlying involvement and his appeal
-    # is only recent points/clean sheets, don't send him to the AI.
-    if (
-        recent["xGI"] == 0
-        and recent["goals"] == 0
-        and recent["assists"] == 0
-    ):
+    if recent["xGI"] == 0 and recent["goals"] == 0 and recent["assists"] == 0:
         return False
 
     return True
@@ -245,9 +279,9 @@ def _candidate_score(player, recent, fdr):
 
 def build_player_context(
     gameweek,
-    top_n=30,
-    premium_n=15,
-    candidate_n=25,
+    top_n=7,
+    premium_n=7,
+    candidate_n=9,
 ):
     """
     Build a high-quality player pool for the AI.
@@ -670,7 +704,11 @@ Format:
                 "content": prompt,
             }
         ],
-        temperature=0.1,
+        temperature=0.2,
+        response_format={
+            "type": "json_schema",
+            "json_schema": PREDICTION_RESPONSE_SCHEMA,
+        },
     )
 
     raw_content = response.choices[0].message.content.strip()

@@ -42,6 +42,12 @@ class Player(models.Model):
     expected_assists = models.DecimalField(max_digits=6, decimal_places=2, default=0)
     expected_goal_involvements = models.DecimalField(max_digits=6, decimal_places=2, default=0)
     ict_index = models.DecimalField(max_digits=6, decimal_places=1, default=0)
+    expected_goals_conceded = models.DecimalField(max_digits=6, decimal_places=2, default=0)
+    clearances_blocks_interceptions = models.PositiveIntegerField(default=0)
+    recoveries = models.PositiveIntegerField(default=0)
+    tackles = models.PositiveIntegerField(default=0)
+    defensive_contribution = models.PositiveIntegerField(default=0)
+    defensive_contribution_per_90 = models.DecimalField(max_digits=5, decimal_places=2, default=0)
 
     status = models.CharField(max_length=1, default="a")  # a=available, i=injured, d=doubtful, s=suspended, u=unavailable
     news = models.CharField(max_length=255, blank=True, default="")
@@ -98,6 +104,10 @@ class PlayerGameweekStat(models.Model):
     expected_goal_involvements = models.DecimalField(max_digits=5, decimal_places=2, default=0)
     bps = models.SmallIntegerField(default=0)
     ict_index = models.DecimalField(max_digits=6, decimal_places=1, default=0)
+    clearances_blocks_interceptions = models.PositiveIntegerField(default=0)
+    recoveries = models.PositiveIntegerField(default=0)
+    tackles = models.PositiveIntegerField(default=0)
+    defensive_contribution = models.PositiveIntegerField(default=0)
 
     is_final = models.BooleanField(default=False)  # True once the gameweek is officially finished
     updated_at = models.DateTimeField(auto_now=True)

@@ -10,15 +10,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y \
-    libpq-dev gcc \
-    && rm -rf /var/lib/apt/lists/*
-
 COPY requirements/ requirements/
 
 RUN pip install --no-cache-dir -r requirements/dev.txt
 
 COPY . .
+
+ENV HTTP_PROXY=
+ENV HTTPS_PROXY=
 
 EXPOSE 8000
 

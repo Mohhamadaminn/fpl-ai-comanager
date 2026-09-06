@@ -35,6 +35,10 @@ PREDICTION_RESPONSE_SCHEMA = {
                 "type": ["integer", "null"],
                 "minimum": 1,
             },
+            "transfer_out_id": {
+                "type": ["integer", "null"],
+                "minimum": 1,
+            },
             "reasoning": {
                 "type": "string",
                 "minLength": 1,
@@ -44,6 +48,7 @@ PREDICTION_RESPONSE_SCHEMA = {
             "captain_id",
             "captain_alternatives_considered",
             "transfer_in_id",
+            "transfer_out_id",
             "reasoning",
         ],
         "additionalProperties": False,
@@ -279,9 +284,10 @@ def _candidate_score(player, recent, fdr):
 
 def build_player_context(
     gameweek,
-    top_n=7,
-    premium_n=7,
-    candidate_n=9,
+    top_n=3,
+    premium_n=3,
+    candidate_n=5,
+    squad=None,
 ):
     """
     Build a high-quality player pool for the AI.
@@ -291,6 +297,7 @@ def build_player_context(
     - players with strong underlying stats
     - players with improving recent form
     - credible differentials
+    - the user's current squad (forced in, so transfer_out has real options)
 
     Cheap players with only a short-term points spike are filtered out.
     """
@@ -327,6 +334,19 @@ def build_player_context(
                 "score": score,
             }
         )
+
+    squad_ids = {p.id for p in squad} if squad else set()
+
+    # Ensure current squad players are always considered, even if they
+    # didn't pass the quality filter (needed so transfer_out has real options)
+    if squad:
+        candidate_player_ids = {c["player"].id for c in candidates}
+        for player in squad:
+            if player.id not in candidate_player_ids:
+                recent = _build_recent_stats(player, gameweek, n=5)
+                fdr = _next_fixtures_difficulty(player.team)
+                score = _candidate_score(player=player, recent=recent, fdr=fdr)
+                candidates.append({"player": player, "recent": recent, "fdr": fdr, "score": score})
 
     # ------------------------------------------------------------------
     # Keep several different types of players.
@@ -374,6 +394,12 @@ def build_player_context(
     ):
         selected[item["player"].id] = item
 
+    # Always include squad players in the final selection, even if they
+    # didn't make any of the above cuts.
+    for item in candidates:
+        if item["player"].id in squad_ids:
+            selected[item["player"].id] = item
+
     context = []
 
     for item in selected.values():
@@ -401,6 +427,8 @@ def build_player_context(
                 "xGI_season": float(
                     player.expected_goal_involvements
                 ),
+                "xGC_season": float(player.expected_goals_conceded),
+                "defensive_contribution_per_90": float(player.defensive_contribution_per_90),
                 "ict_index_season": float(player.ict_index),
 
                 # Availability.
@@ -410,27 +438,33 @@ def build_player_context(
                     player.chance_of_playing_next_round
                 ),
 
-                # Recent performance.
-                "recent": recent,
+                "recent": {
+                    "xGI": recent["xGI"],
+                    "xGI_per_90": recent["xGI_per_90"],
+                    "minutes_per_game": recent["minutes_per_game"],
+                    "form_trend": recent["form_trend"],
+                },
 
                 # Upcoming fixtures.
                 "next_fixtures_fdr_avg": item["fdr"],
 
                 # Internal pre-ranking only.
                 "candidate_score": item["score"],
+
+                # Ownership by the current user.
+                "in_current_squad": player.id in squad_ids,
             }
         )
 
     return context
 
-
 # ---------------------------------------------------------------------------
 # AI prediction
 # ---------------------------------------------------------------------------
 
-def generate_ai_prediction(gameweek: Gameweek) -> AIPrediction:
+def generate_ai_prediction(gameweek: Gameweek, squad:None) -> AIPrediction:
 
-    player_context = build_player_context(gameweek)
+    player_context = build_player_context(gameweek, squad=squad)
 
     prompt = f"""
 You are an expert Fantasy Premier League analyst making decisions for {gameweek.name}.
@@ -588,15 +622,28 @@ POSITION-SPECIFIC RULES
 
 DEFENDERS:
 
-Do not prioritize defenders simply because of recent clean sheets.
+Do NOT judge defenders using xGI or xGI_season — these are attacking
+metrics and are largely irrelevant for defensive value.
 
-Prioritize:
+Judge defenders primarily on:
 
-1. expected minutes
-2. upcoming fixtures
-3. clean-sheet potential
-4. attacking threat
-5. sustainable underlying statistics
+1. expected minutes (nailed-on starter)
+2. clean_sheet potential — derived from team defensive strength and
+   upcoming fixture difficulty (next_fixtures_fdr_avg), NOT recent xGI
+3. xGC_season — LOWER is better (fewer expected goals conceded by
+   their team while they're on the pitch)
+4. defensive_contribution_per_90 — HIGHER is better. FPL awards 2 bonus
+   points whenever a defender records 10+ combined clearances, blocks,
+   interceptions and tackles (CBIT) in a match. A defender with high
+   defensive_contribution_per_90 has a realistic chance of hitting this
+   threshold regularly, which is a meaningful and repeatable points
+   source independent of clean sheets or attacking returns.
+5. recent clean_sheets count, as a secondary confirmation of trend
+6. attacking threat (xGI/set-piece involvement) — a BONUS only,
+   never the primary reason to select or drop a defender
+
+When comparing two defenders with similar fixtures and clean sheet
+potential, prefer the one with higher defensive_contribution_per_90.
 
 MIDFIELDERS / FORWARDS:
 
@@ -608,6 +655,10 @@ Prioritize:
 4. xGI_per_90
 5. upcoming fixtures
 6. sustained form
+7. defensive_contribution_per_90 — a minor bonus factor (2 extra points
+   at 12+ combined tackles/interceptions/clearances/blocks/recoveries
+   per match). Useful as a tiebreaker between two similar attacking
+   options, but should never outweigh priorities 1-6.
 
 ==================================================
 PREMIUM COMPARISON
@@ -673,10 +724,26 @@ Select the player with the strongest combination of:
 - fixture quality
 - sustainable form
 
+Price constraint: transfer_in_id's price should be close to
+transfer_out_id's price — within roughly ±0.5 price units, unless a
+significantly better option requires a small additional spend (up to
++1.5) and you explicitly justify why the extra cost is worth it. Do
+NOT suggest a transfer_in far more expensive than transfer_out without
+explicit reasoning about the price gap.
+
+
 If no player is clearly good enough to recommend,
 return null for transfer_in_id.
 
 It is better to return null than to recommend a weak transfer target.
+
+
+transfer_out_id MUST be a player where "in_current_squad" is true in DATA.
+Never suggest transferring out a player not currently owned.
+If no player in the current squad is a reasonable transfer-out candidate,
+return null for both transfer_in_id and transfer_out_id.
+
+
 
 ==================================================
 FINAL OUTPUT
@@ -692,6 +759,7 @@ Format:
     "captain_id": <player id>,
     "captain_alternatives_considered": [<player id>, <player id>],
     "transfer_in_id": <player id or null>,
+    "transfer_out_id": <player id or null>,
     "reasoning": "<3-4 sentences citing specific stats and explaining the decision>"
 }}
 """
@@ -736,6 +804,7 @@ Format:
         [],
     )
     transfer_in_id = result.get("transfer_in_id")
+    transfer_out_id = result.get("transfer_out_id")
 
     if not captain_id:
         raise ValueError("AI did not return captain_id.")
@@ -768,6 +837,7 @@ Format:
         )
 
     transfer_in = None
+    transfer_out = None
 
     if transfer_in_id:
         transfer_in = Player.objects.filter(
@@ -781,6 +851,25 @@ Format:
                 f"{transfer_in_id}"
             )
 
+    if transfer_out_id:
+        transfer_out = Player.objects.filter(
+            id=transfer_out_id,
+        ).first()
+
+        if not transfer_out:
+            raise ValueError(
+                f"AI selected invalid transfer_out target: {transfer_out_id}"
+            )
+
+    # Enforce a hard price-gap ceiling regardless of what the AI reasoned,
+    # since price constraints are a real FPL budget rule, not a soft preference.
+    MAX_PRICE_GAP = 1.5
+    if transfer_in and transfer_out:
+        price_gap = float(transfer_in.price) - float(transfer_out.price)
+        if price_gap > MAX_PRICE_GAP:
+            transfer_in = None
+            transfer_out = None
+
     # ------------------------------------------------------------------
     # Save prediction.
     # ------------------------------------------------------------------
@@ -790,6 +879,7 @@ Format:
         defaults={
             "suggested_captain": captain,
             "suggested_transfer_in": transfer_in,
+            "suggested_transfer_out": transfer_out,
             "reasoning": result["reasoning"],
             "data_snapshot": {
                 "players_considered": player_context,
@@ -799,7 +889,6 @@ Format:
     )
 
     return prediction
-
 
 # ---------------------------------------------------------------------------
 # Evaluation

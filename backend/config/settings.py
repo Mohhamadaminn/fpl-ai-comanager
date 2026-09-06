@@ -53,6 +53,7 @@ INSTALLED_APPS = [
     'apps.fpl_data.apps.FplDataConfig',
     'apps.accounts.apps.AccountsConfig',
     'apps.predictions.apps.PredictionsConfig',
+    'apps.notifications.apps.NotificationsConfig',
 
 ]
 

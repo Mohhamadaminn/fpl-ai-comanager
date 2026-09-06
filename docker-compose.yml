@@ -96,6 +96,28 @@ services:
         condition: service_healthy
       redis:
         condition: service_started
+  
+
+  bot:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      <<: *build-common
+    user: "${UID}:${GID}"
+    command: python manage.py runbot
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      <<: *runtime-proxy
+    volumes:
+      - ./backend:/app
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
 
 volumes:
   postgres_data:

@@ -68,6 +68,7 @@ class Gameweek(models.Model):
     finished = models.BooleanField(default=False)
     average_entry_score = models.PositiveIntegerField(null=True, blank=True)
     highest_score = models.PositiveIntegerField(null=True, blank=True)
+    reminder_sent = models.BooleanField(default=False)
 
     def __str__(self):
         return self.name

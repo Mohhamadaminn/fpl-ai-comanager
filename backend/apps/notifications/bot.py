@@ -30,11 +30,17 @@ def extract_team_id(text: str) -> int | None:
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    def _save_chat_id():
+        user, _ = User.objects.get_or_create(username="fpl_manager")
+        FPLManagerProfile.objects.update_or_create(
+            user=user, defaults={"telegram_chat_id": update.effective_chat.id}
+        )
+
+    await sync_to_async(_save_chat_id)()
     await update.message.reply_text(
         "Hey! I'm your FPL AI Co-Manager. Use /setteamid to link your team, "
         "or /prediction to get this gameweek's suggestion."
     )
-
 
 async def prediction(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from apps.fpl_data.models import Gameweek

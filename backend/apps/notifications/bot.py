@@ -12,6 +12,7 @@ from telegram.ext import (
 )
 from django.conf import settings
 from django.contrib.auth.models import User
+from django.utils import timezone
 from apps.accounts.models import FPLManagerProfile
 
 logger = logging.getLogger(__name__)
@@ -39,7 +40,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await sync_to_async(_save_chat_id)()
     await update.message.reply_text(
         "Hey! I'm your FPL AI Co-Manager. Use /setteamid to link your team, "
-        "or /prediction to get this gameweek's suggestion."
+        "or /prediction to get this gameweek's suggestion. Use /status to check your setup."
     )
 
 async def prediction(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -143,10 +144,48 @@ async def my_team_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("No team ID set yet. Use /setteamid.")
 
 
+def format_status_message(profile, gameweek) -> str:
+    """Build the current co-manager status shown by the /status command."""
+    reminder_status = "Enabled" if profile.telegram_chat_id else "Disabled"
+    gameweek_status = "No current or upcoming gameweek found."
+
+    if gameweek:
+        deadline = timezone.localtime(gameweek.deadline_time).strftime("%a, %d %b at %H:%M %Z")
+        gameweek_status = f"{gameweek.name}\nDeadline: {deadline}"
+
+    return (
+        "⚙️ *Co-Manager Status*\n\n"
+        f"Team ID: `{profile.fpl_team_id}`\n"
+        f"Free transfers: {profile.free_transfers}\n"
+        f"Deadline reminder: {reminder_status}\n\n"
+        f"{gameweek_status}"
+    )
+
+
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    profile = await sync_to_async(
+        lambda: FPLManagerProfile.objects.filter(user__username="fpl_manager").first()
+    )()
+    if not profile:
+        await update.message.reply_text("No team ID set yet. Use /setteamid.")
+        return
+
+    from apps.fpl_data.models import Gameweek
+
+    gameweek = await sync_to_async(
+        lambda: Gameweek.objects.filter(is_current=True).first()
+        or Gameweek.objects.filter(is_next=True).first()
+    )()
+    await update.message.reply_text(
+        format_status_message(profile, gameweek), parse_mode="Markdown"
+    )
+
+
 def build_application():
     application = Application.builder().token(settings.TELEGRAM_BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("prediction", prediction))
     application.add_handler(setteamid_conversation)
     application.add_handler(CommandHandler("myteamid", my_team_id))
+    application.add_handler(CommandHandler("status", status))
     return application

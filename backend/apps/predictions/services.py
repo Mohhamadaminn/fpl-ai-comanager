@@ -881,37 +881,28 @@ Format:
 # Evaluation
 # ---------------------------------------------------------------------------
 
-def evaluate_gameweek(gameweek):
+def evaluate_gameweek(gameweek, manager_state=None):
     """
     After a gameweek finishes, score the AI captain and transfer suggestion
     against actual results.
     """
 
-    ai_prediction = (
-        AIPrediction.objects
-        .filter(gameweek=gameweek)
-        .first()
-    )
-
+    ai_prediction = AIPrediction.objects.filter(gameweek=gameweek).first()
     if not ai_prediction:
         return None
 
-    # ---------------------------------------------------------------
-    # Captain
-    # ---------------------------------------------------------------
+    captain_multiplier = 2
+    if manager_state and manager_state.get("chip_active") == "3xc":
+        captain_multiplier = 3
 
     ai_captain_points = None
     ai_was_correct_captain = None
-
     if ai_prediction.suggested_captain:
         stat = PlayerGameweekStat.objects.filter(
-            player=ai_prediction.suggested_captain,
-            gameweek=gameweek,
-            is_final=True,
+            player=ai_prediction.suggested_captain, gameweek=gameweek, is_final=True
         ).first()
-
         if stat:
-            ai_captain_points = stat.points * 2
+            ai_captain_points = stat.points * captain_multiplier
             ai_was_correct_captain = stat.points > 0
 
     # ---------------------------------------------------------------
@@ -960,6 +951,7 @@ def evaluate_gameweek(gameweek):
 def validate_prediction(prediction: AIPrediction, manager_state: dict) -> dict:
     errors = []
     squad_ids = {p.id for p in manager_state["squad"]}
+    active_chip = manager_state.get("chip_active")
 
     if prediction.suggested_captain and prediction.suggested_captain.id not in squad_ids:
         errors.append(
@@ -995,18 +987,19 @@ def validate_prediction(prediction: AIPrediction, manager_state: dict) -> dict:
                 f"(bank {manager_state['bank']} + sale {prediction.suggested_transfer_out.price})"
             )
 
-        free_transfers = manager_state.get("free_transfers", 0)
-        if free_transfers < 1:
-            # No free transfer available — default to holding rather than
-            # auto-taking a -4 hit, since we can't reliably quantify whether
-            # the transfer's expected gain outweighs the point cost yet.
-            recommend_hold = True
+        if active_chip in ("wildcard", "freehit"):
+            hit_cost = 0  # unlimited free transfers under these chips, never hold or hit
         else:
-            hit_cost = 0  # covered by a free transfer
+            free_transfers = manager_state.get("free_transfers", 0)
+            if free_transfers < 1:
+                recommend_hold = True
+            else:
+                hit_cost = 0
 
     return {
         "is_valid": len(errors) == 0,
         "errors": errors,
         "hit_cost": hit_cost,
         "recommend_hold": recommend_hold,
+        "active_chip": active_chip,
     }

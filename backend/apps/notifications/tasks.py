@@ -6,8 +6,8 @@ from datetime import timedelta
 from telegram import Bot
 from apps.fpl_data.models import Gameweek
 from apps.accounts.models import FPLManagerProfile
-from apps.accounts.services import get_current_squad
 from apps.predictions.services import generate_ai_prediction
+from apps.accounts.services import get_manager_gameweek_state, sync_free_transfers
 
 
 @shared_task
@@ -18,7 +18,7 @@ def send_deadline_reminder_task():
 
     time_to_deadline = gw.deadline_time - timezone.now()
     if not (timedelta(hours=0) < time_to_deadline < timedelta(hours=24)):
-        return  # only fire once we're within 24h of deadline
+        return
 
     if getattr(gw, "reminder_sent", False):
         return
@@ -27,18 +27,32 @@ def send_deadline_reminder_task():
     if not profile or not profile.telegram_chat_id:
         return
 
-    squad = get_current_squad(profile.fpl_team_id, gw.fpl_id)
-    pred = generate_ai_prediction(gw, squad)
+    from apps.accounts.services import get_manager_gameweek_state, sync_free_transfers
+    sync_free_transfers(profile)
+    manager_state = get_manager_gameweek_state(profile.fpl_team_id, gw.fpl_id)
+    manager_state["free_transfers"] = profile.free_transfers
+    pred = generate_ai_prediction(gw, manager_state["squad"], manager_state)
+
+    hold_reason = pred.data_snapshot.get("hold_reason") if pred.data_snapshot else None
+    hit_cost = pred.data_snapshot.get("hit_cost", 0) if pred.data_snapshot else 0
+    hit_note = f" (⚠️ -{hit_cost} pts hit)" if hit_cost else ""
+
+    transfer_line = (
+        f"🔄 Transfer: {pred.suggested_transfer_out.web_name if pred.suggested_transfer_out else 'None'} ➜ "
+        f"{pred.suggested_transfer_in.web_name if pred.suggested_transfer_in else 'None'}{hit_note}"
+    )
+    if hold_reason:
+        transfer_line = f"🔒 Hold — {hold_reason}"
 
     message = (
         f"⏰ *{gw.name} deadline in less than 24h!*\n\n"
         f"🎖 Captain: *{pred.suggested_captain.web_name if pred.suggested_captain else 'N/A'}*\n"
-        f"🔄 Transfer: {pred.suggested_transfer_out.web_name if pred.suggested_transfer_out else 'None'} ➜ "
-        f"{pred.suggested_transfer_in.web_name if pred.suggested_transfer_in else 'None'}\n\n"
+        f"{transfer_line}\n\n"
         f"💭 {pred.reasoning}"
     )
 
     bot = Bot(token=settings.TELEGRAM_BOT_TOKEN)
     asyncio.run(bot.send_message(chat_id=profile.telegram_chat_id, text=message, parse_mode="Markdown"))
+
     gw.reminder_sent = True
     gw.save(update_fields=["reminder_sent"])

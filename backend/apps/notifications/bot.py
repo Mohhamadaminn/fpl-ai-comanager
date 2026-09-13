@@ -45,7 +45,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def prediction(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from apps.fpl_data.models import Gameweek
     from apps.accounts.models import FPLManagerProfile
-    from apps.accounts.services import get_current_squad
+    from apps.accounts.services import get_manager_gameweek_state
     from apps.predictions.services import generate_ai_prediction
 
     await update.message.reply_text("Analyzing this gameweek, one moment...")
@@ -63,8 +63,8 @@ async def prediction(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     try:
-        squad = await sync_to_async(get_current_squad)(profile.fpl_team_id, gw.fpl_id)
-        pred = await sync_to_async(generate_ai_prediction)(gw, squad)
+        manager_state = await sync_to_async(get_manager_gameweek_state)(profile.fpl_team_id, gw.fpl_id)
+        pred = await sync_to_async(generate_ai_prediction)(gw, manager_state["squad"], manager_state)
     except Exception as e:
         logger.exception("Prediction failed")
         await update.message.reply_text(f"Something went wrong generating the prediction: {e}")
@@ -73,13 +73,21 @@ async def prediction(update: Update, context: ContextTypes.DEFAULT_TYPE):
     captain = await sync_to_async(lambda: pred.suggested_captain.web_name if pred.suggested_captain else "N/A")()
     transfer_in = await sync_to_async(lambda: pred.suggested_transfer_in.web_name if pred.suggested_transfer_in else "None")()
     transfer_out = await sync_to_async(lambda: pred.suggested_transfer_out.web_name if pred.suggested_transfer_out else "None")()
+    hold_reason = pred.data_snapshot.get("hold_reason") if pred.data_snapshot else None
+    hit_cost = pred.data_snapshot.get("hit_cost", 0) if pred.data_snapshot else 0
+    hit_note = f" (⚠️ -{hit_cost} pts hit)" if hit_cost else ""
+
+    transfer_line = f"🔄 Transfer: {transfer_out} ➜ {transfer_in}{hit_note}"
+    if hold_reason:
+        transfer_line = f"🔒 Hold — {hold_reason}"
 
     message = (
         f"📊 *{gw.name} AI Prediction*\n\n"
         f"🎖 Captain: *{captain}*\n"
-        f"🔄 Transfer: {transfer_out} ➜ {transfer_in}\n\n"
+        f"{transfer_line}\n\n"
         f"💭 {pred.reasoning}"
     )
+    
     await update.message.reply_text(message, parse_mode="Markdown")
 
 

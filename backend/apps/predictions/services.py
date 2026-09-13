@@ -462,7 +462,7 @@ def build_player_context(
 # AI prediction
 # ---------------------------------------------------------------------------
 
-def generate_ai_prediction(gameweek: Gameweek, squad:None) -> AIPrediction:
+def generate_ai_prediction(gameweek: Gameweek, squad:None, manager_state:None) -> AIPrediction:
 
     player_context = build_player_context(gameweek, squad=squad)
 
@@ -781,7 +781,6 @@ Format:
 
     raw_content = response.choices[0].message.content.strip()
 
-    # Handle accidental markdown fences.
     if raw_content.startswith("```"):
         raw_content = raw_content.replace("```json", "", 1)
         raw_content = raw_content.replace("```", "")
@@ -790,19 +789,14 @@ Format:
     try:
         result = json.loads(raw_content)
     except json.JSONDecodeError:
-        raise ValueError(
-            f"AI returned invalid JSON: {raw_content[:1000]}"
-        )
+        raise ValueError(f"AI returned invalid JSON: {raw_content[:1000]}")
 
     # ------------------------------------------------------------------
     # Validate required fields.
     # ------------------------------------------------------------------
 
     captain_id = result.get("captain_id")
-    alternatives = result.get(
-        "captain_alternatives_considered",
-        [],
-    )
+    alternatives = result.get("captain_alternatives_considered", [])
     transfer_in_id = result.get("transfer_in_id")
     transfer_out_id = result.get("transfer_out_id")
 
@@ -810,14 +804,10 @@ Format:
         raise ValueError("AI did not return captain_id.")
 
     if not isinstance(alternatives, list):
-        raise ValueError(
-            "captain_alternatives_considered must be a list."
-        )
+        raise ValueError("captain_alternatives_considered must be a list.")
 
     if len(alternatives) < 2:
-        raise ValueError(
-            "AI must provide two captain alternatives."
-        )
+        raise ValueError("AI must provide two captain alternatives.")
 
     if not result.get("reasoning"):
         raise ValueError("AI did not return reasoning.")
@@ -826,40 +816,23 @@ Format:
     # Fetch players.
     # ------------------------------------------------------------------
 
-    captain = Player.objects.filter(
-        id=captain_id,
-        status="a",
-    ).first()
+    captain = Player.objects.filter(id=captain_id, status="a").first()
 
     if not captain:
-        raise ValueError(
-            f"AI selected invalid/unavailable captain: {captain_id}"
-        )
+        raise ValueError(f"AI selected invalid/unavailable captain: {captain_id}")
 
     transfer_in = None
     transfer_out = None
 
     if transfer_in_id:
-        transfer_in = Player.objects.filter(
-            id=transfer_in_id,
-            status="a",
-        ).first()
-
+        transfer_in = Player.objects.filter(id=transfer_in_id, status="a").first()
         if not transfer_in:
-            raise ValueError(
-                f"AI selected invalid/unavailable transfer target: "
-                f"{transfer_in_id}"
-            )
+            raise ValueError(f"AI selected invalid/unavailable transfer target: {transfer_in_id}")
 
     if transfer_out_id:
-        transfer_out = Player.objects.filter(
-            id=transfer_out_id,
-        ).first()
-
+        transfer_out = Player.objects.filter(id=transfer_out_id).first()
         if not transfer_out:
-            raise ValueError(
-                f"AI selected invalid transfer_out target: {transfer_out_id}"
-            )
+            raise ValueError(f"AI selected invalid transfer_out target: {transfer_out_id}")
 
     # Enforce a hard price-gap ceiling regardless of what the AI reasoned,
     # since price constraints are a real FPL budget rule, not a soft preference.
@@ -887,6 +860,20 @@ Format:
             },
         },
     )
+
+    if squad is not None and manager_state is not None:
+        validation = validate_prediction(prediction, manager_state)
+        if not validation["is_valid"] or validation["recommend_hold"]:
+            prediction.suggested_transfer_in = None
+            prediction.suggested_transfer_out = None
+            if not validation["is_valid"]:
+                prediction.data_snapshot["validation_errors"] = validation["errors"]
+            if validation["recommend_hold"]:
+                prediction.data_snapshot["hold_reason"] = "No free transfer available — holding to avoid a point hit."
+            prediction.save()
+        else:
+            prediction.data_snapshot["hit_cost"] = validation["hit_cost"]
+            prediction.save()
 
     return prediction
 
@@ -968,3 +955,58 @@ def evaluate_gameweek(gameweek):
     )
 
     return evaluation
+
+
+def validate_prediction(prediction: AIPrediction, manager_state: dict) -> dict:
+    errors = []
+    squad_ids = {p.id for p in manager_state["squad"]}
+
+    if prediction.suggested_captain and prediction.suggested_captain.id not in squad_ids:
+        errors.append(
+            f"Suggested captain {prediction.suggested_captain.web_name} is not in the current squad."
+        )
+
+    if prediction.suggested_transfer_out and prediction.suggested_transfer_out.id not in squad_ids:
+        errors.append(
+            f"Suggested transfer_out {prediction.suggested_transfer_out.web_name} is not in the current squad."
+        )
+    if prediction.suggested_transfer_in and prediction.suggested_transfer_in.id in squad_ids:
+        errors.append(
+            f"Suggested transfer_in {prediction.suggested_transfer_in.web_name} is already in the squad."
+        )
+
+    if prediction.suggested_transfer_in and prediction.suggested_transfer_out:
+        if prediction.suggested_transfer_in.position != prediction.suggested_transfer_out.position:
+            errors.append(
+                f"Position mismatch: {prediction.suggested_transfer_out.web_name} "
+                f"({prediction.suggested_transfer_out.position}) vs "
+                f"{prediction.suggested_transfer_in.web_name} ({prediction.suggested_transfer_in.position})"
+            )
+
+    hit_cost = 0
+    recommend_hold = False
+
+    if prediction.suggested_transfer_in and prediction.suggested_transfer_out:
+        available = manager_state["bank"] + float(prediction.suggested_transfer_out.price)
+        needed = float(prediction.suggested_transfer_in.price)
+        if needed > available:
+            errors.append(
+                f"Insufficient budget: need {needed}, have {available} "
+                f"(bank {manager_state['bank']} + sale {prediction.suggested_transfer_out.price})"
+            )
+
+        free_transfers = manager_state.get("free_transfers", 0)
+        if free_transfers < 1:
+            # No free transfer available — default to holding rather than
+            # auto-taking a -4 hit, since we can't reliably quantify whether
+            # the transfer's expected gain outweighs the point cost yet.
+            recommend_hold = True
+        else:
+            hit_cost = 0  # covered by a free transfer
+
+    return {
+        "is_valid": len(errors) == 0,
+        "errors": errors,
+        "hit_cost": hit_cost,
+        "recommend_hold": recommend_hold,
+    }

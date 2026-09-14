@@ -143,10 +143,48 @@ async def my_team_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("No team ID set yet. Use /setteamid.")
 
 
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    from apps.fpl_data.models import Gameweek
+    from apps.accounts.models import FPLManagerProfile
+
+    def _get_data():
+        profile = FPLManagerProfile.objects.filter(user__username="fpl_manager").first()
+        gw = Gameweek.objects.filter(is_current=True).first() or Gameweek.objects.filter(is_next=True).first()
+        return profile, gw
+
+    profile, gw = await sync_to_async(_get_data)()
+
+    if not profile:
+        await update.message.reply_text("No team linked yet. Use /setteamid to get started.")
+        return
+
+    team_id = profile.fpl_team_id
+    free_transfers = profile.free_transfers
+    reminders_status = "✅ Enabled" if profile.telegram_chat_id else "❌ Not set (send /start to enable)"
+
+    if gw:
+        gw_name = gw.name
+        deadline = gw.deadline_time.strftime("%Y-%m-%d %H:%M UTC")
+    else:
+        gw_name = "Unknown"
+        deadline = "N/A"
+
+    message = (
+        f"📋 *Status*\n\n"
+        f"🆔 Team ID: {team_id}\n"
+        f"📅 Gameweek: {gw_name}\n"
+        f"⏰ Deadline: {deadline}\n"
+        f"🔁 Free transfers: {free_transfers}\n"
+        f"🔔 Reminders: {reminders_status}"
+    )
+    await update.message.reply_text(message, parse_mode="Markdown")
+
+
 def build_application():
     application = Application.builder().token(settings.TELEGRAM_BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("prediction", prediction))
     application.add_handler(setteamid_conversation)
     application.add_handler(CommandHandler("myteamid", my_team_id))
+    application.add_handler(CommandHandler("status", status))
     return application

@@ -1003,3 +1003,31 @@ def validate_prediction(prediction: AIPrediction, manager_state: dict) -> dict:
         "recommend_hold": recommend_hold,
         "active_chip": active_chip,
     }
+
+def build_squad_health_report(squad, current_gameweek) -> list[dict]:
+    """Checks each squad player for concerning signals: declining form/xGI,
+    injury/suspension, or a tough upcoming fixture swing."""
+    flags = []
+
+    for player in squad:
+        player_flags = []
+
+        recent = _build_recent_stats(player, current_gameweek, n=5)
+        if recent["form_trend"] == "declining":
+            player_flags.append(f"form declining (xGI last 5 GWs: {recent['xGI']})")
+
+        if player.status in ("i", "d", "s", "u"):
+            status_labels = {"i": "injured", "d": "doubtful", "s": "suspended", "u": "unavailable"}
+            note = status_labels.get(player.status, player.status)
+            if player.news:
+                note += f" — {player.news}"
+            player_flags.append(note)
+
+        fdr = _next_fixtures_difficulty(player.team)
+        if fdr is not None and fdr >= 4:
+            player_flags.append(f"tough fixtures ahead (avg FDR {fdr})")
+
+        if player_flags:
+            flags.append({"player": player, "flags": player_flags})
+
+    return flags

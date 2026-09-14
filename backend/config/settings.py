@@ -182,5 +182,9 @@ CELERY_BEAT_SCHEDULE = {
         "task": "apps.notifications.tasks.send_deadline_reminder_task",
         "schedule": crontab(minute="*/30"),
     },
+    "weekly-squad-health-check": {
+        "task": "apps.notifications.tasks.send_weekly_squad_health_task",
+        "schedule": crontab(day_of_week="friday", hour=20, minute=0),
+    }
 }
 

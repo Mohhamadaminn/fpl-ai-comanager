@@ -56,3 +56,35 @@ def send_deadline_reminder_task():
 
     gw.reminder_sent = True
     gw.save(update_fields=["reminder_sent"])
+
+
+@shared_task
+def send_weekly_squad_health_task():
+    from apps.fpl_data.models import Gameweek
+    from apps.accounts.models import FPLManagerProfile
+    from apps.accounts.services import get_manager_gameweek_state
+    from apps.predictions.services import build_squad_health_report
+
+    gw = Gameweek.objects.filter(is_current=True).first() or Gameweek.objects.filter(is_next=True).first()
+    if not gw:
+        return
+
+    profile = FPLManagerProfile.objects.filter(user__username="fpl_manager").first()
+    if not profile or not profile.telegram_chat_id:
+        return
+
+    manager_state = get_manager_gameweek_state(profile.fpl_team_id, gw.fpl_id)
+    report = build_squad_health_report(manager_state["squad"], gw)
+
+    if not report:
+        message = f"✅ *Weekly Squad Check — {gw.name}*\n\nNo concerns — your squad looks healthy."
+    else:
+        lines = [f"⚠️ *Weekly Squad Check — {gw.name}*\n"]
+        for item in report:
+            lines.append(f"\n*{item['player'].web_name}*")
+            for flag in item["flags"]:
+                lines.append(f"  • {flag}")
+        message = "\n".join(lines)
+
+    bot = Bot(token=settings.TELEGRAM_BOT_TOKEN)
+    asyncio.run(bot.send_message(chat_id=profile.telegram_chat_id, text=message, parse_mode="Markdown"))

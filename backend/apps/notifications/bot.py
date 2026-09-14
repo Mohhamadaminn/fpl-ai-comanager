@@ -2,6 +2,7 @@ import re
 import logging
 from asgiref.sync import sync_to_async
 from telegram import Update
+from telegram import BotCommand
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -180,11 +181,41 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(message, parse_mode="Markdown")
 
 
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = (
+        "🤖 *FPL AI Co-Manager — Commands*\n\n"
+        "/start — Get started and enable reminders\n"
+        "/setteamid — Link your FPL team (paste your team link)\n"
+        "/myteamid — Show your linked team ID\n"
+        "/prediction — Get this gameweek's AI suggestion\n"
+        "/status — Show team ID, gameweek, deadline, free transfers, reminder status\n"
+        "/help — Show this list"
+        
+    )
+    await update.message.reply_text(message, parse_mode="Markdown")
+
+
+
+async def set_bot_commands(application: Application):
+    commands = [
+        BotCommand("start", "Get started and enable reminders"),
+        BotCommand("setteamid", "Link your FPL team"),
+        BotCommand("myteamid", "Show your linked team ID"),
+        BotCommand("prediction", "Get this gameweek's AI suggestion"),
+        BotCommand("status", "Show team status and deadline"),
+        BotCommand("help", "Show all commands"),
+    ]
+    await application.bot.set_my_commands(commands)
+
+
 def build_application():
-    application = Application.builder().token(settings.TELEGRAM_BOT_TOKEN).build()
+    application = Application.builder().token(settings.TELEGRAM_BOT_TOKEN).post_init(set_bot_commands).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("prediction", prediction))
     application.add_handler(setteamid_conversation)
     application.add_handler(CommandHandler("myteamid", my_team_id))
     application.add_handler(CommandHandler("status", status))
+    application.add_handler(CommandHandler("help", help_command))
     return application
+
+

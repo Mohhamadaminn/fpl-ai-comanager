@@ -120,8 +120,31 @@ def _get_recent_stats(player, current_gameweek, n=5):
     )
 
 
-def _build_recent_stats(player, current_gameweek, n=5):
-    stats = _get_recent_stats(player, current_gameweek, n)
+def _get_recent_stats_by_player(players, current_gameweek, n=5):
+    """Return each player's latest finalized stats using one query."""
+    stats_by_player = {player.id: [] for player in players}
+
+    stats = (
+        PlayerGameweekStat.objects.filter(
+            player_id__in=stats_by_player,
+            is_final=True,
+            gameweek__fpl_id__lt=current_gameweek.fpl_id,
+        )
+        .select_related("gameweek")
+        .order_by("player_id", "-gameweek__fpl_id")
+    )
+
+    for stat in stats:
+        player_stats = stats_by_player[stat.player_id]
+        if len(player_stats) < n:
+            player_stats.append(stat)
+
+    return stats_by_player
+
+
+def _build_recent_stats(player, current_gameweek, n=5, stats=None):
+    if stats is None:
+        stats = _get_recent_stats(player, current_gameweek, n)
 
     if not stats:
         return {
@@ -277,6 +300,34 @@ def _candidate_score(player, recent, fdr):
 
     return round(score, 2)
 
+def _get_fixture_difficulties_by_team(teams, n=5):
+    """Return average FDRs for teams' next fixtures using one query."""
+    team_ids = {team.id for team in teams}
+    fixtures_by_team = {team_id: [] for team_id in team_ids}
+
+    fixtures = Fixture.objects.filter(
+        finished=False,
+    ).filter(
+        models.Q(team_home_id__in=team_ids) |
+        models.Q(team_away_id__in=team_ids)
+    ).order_by("kickoff_time")
+
+    for fixture in fixtures:
+        for team_id, difficulty in (
+            (fixture.team_home_id, fixture.difficulty_home),
+            (fixture.team_away_id, fixture.difficulty_away),
+        ):
+            if team_id in fixtures_by_team and len(fixtures_by_team[team_id]) < n:
+                fixtures_by_team[team_id].append(difficulty)
+
+    return {
+        team_id: round(sum(known_difficulties) / len(known_difficulties), 2)
+        if (known_difficulties := [d for d in difficulties if d is not None])
+        else None
+        for team_id, difficulties in fixtures_by_team.items()
+    }
+
+
 
 # ---------------------------------------------------------------------------
 # Player context
@@ -309,16 +360,25 @@ def build_player_context(
     )
 
     players = list(base_qs)
+    recent_stats_by_player = _get_recent_stats_by_player(players, gameweek, n=5)
+    fixture_difficulties_by_team = _get_fixture_difficulties_by_team(
+        [player.team for player in players], n=5
+    )
+
 
     candidates = []
 
     for player in players:
-        recent = _build_recent_stats(player, gameweek, n=5)
+
+        recent = _build_recent_stats(
+            player, gameweek, n=5, stats=recent_stats_by_player[player.id]
+        )
+
 
         if not _is_transfer_candidate(player, recent):
             continue
 
-        fdr = _next_fixtures_difficulty(player.team)
+        fdr = fixture_difficulties_by_team[player.team_id]
 
         score = _candidate_score(
             player=player,
@@ -343,11 +403,13 @@ def build_player_context(
         candidate_player_ids = {c["player"].id for c in candidates}
         for player in squad:
             if player.id not in candidate_player_ids:
-                recent = _build_recent_stats(player, gameweek, n=5)
-                fdr = _next_fixtures_difficulty(player.team)
+                recent = _build_recent_stats(
+                    player, gameweek, n=5,
+                    stats=recent_stats_by_player.get(player.id)  # was: recent_stats_by_player[player.id]
+                )
+                fdr = fixture_difficulties_by_team.get(player.team_id)  # was: fixture_difficulties_by_team[player.team_id]
                 score = _candidate_score(player=player, recent=recent, fdr=fdr)
                 candidates.append({"player": player, "recent": recent, "fdr": fdr, "score": score})
-
     # ------------------------------------------------------------------
     # Keep several different types of players.
     # ------------------------------------------------------------------
@@ -407,54 +469,28 @@ def build_player_context(
         recent = item["recent"]
 
         context.append(
-            {
-                # This is the Django PK because the AI result is later
-                # used with Player.objects.filter(id=...).
-                "id": player.id,
-
-                "name": player.web_name,
-                "position": player.position,
-                "team": player.team.short_name,
-
-                "price": float(player.price),
-                "ownership": float(player.selected_by_percent),
-                "total_points": player.total_points,
-
-                # Current season data.
-                "form": float(player.form),
-                "xG_season": float(player.expected_goals),
-                "xA_season": float(player.expected_assists),
-                "xGI_season": float(
-                    player.expected_goal_involvements
-                ),
-                "xGC_season": float(player.expected_goals_conceded),
-                "defensive_contribution_per_90": float(player.defensive_contribution_per_90),
-                "ict_index_season": float(player.ict_index),
-
-                # Availability.
-                "status": player.status,
-                "news": player.news,
-                "chance_of_playing_next_round": (
-                    player.chance_of_playing_next_round
-                ),
-
-                "recent": {
-                    "xGI": recent["xGI"],
-                    "xGI_per_90": recent["xGI_per_90"],
-                    "minutes_per_game": recent["minutes_per_game"],
-                    "form_trend": recent["form_trend"],
-                },
-
-                # Upcoming fixtures.
-                "next_fixtures_fdr_avg": item["fdr"],
-
-                # Internal pre-ranking only.
-                "candidate_score": item["score"],
-
-                # Ownership by the current user.
-                "in_current_squad": player.id in squad_ids,
-            }
-        )
+        {
+            "id": player.id,
+            "name": player.web_name,
+            "position": player.position,
+            "team": player.team.short_name,
+            "price": round(float(player.price), 1),
+            "form": round(float(player.form), 1),
+            "xGI_season": round(float(player.expected_goal_involvements), 2),
+            "xGC_season": round(float(player.expected_goals_conceded), 2),
+            "defensive_contribution_per_90": round(float(player.defensive_contribution_per_90), 2),
+            "status": player.status,
+            **({"news": player.news} if player.news else {}),
+            **({"chance_of_playing": player.chance_of_playing_next_round} if player.status != "a" else {}),
+            "recent": {
+                "xGI": recent["xGI"],
+                "xGI_per_90": recent["xGI_per_90"],
+                "minutes_per_game": recent["minutes_per_game"],
+            },
+            "next_fixtures_fdr_avg": item["fdr"],
+            "in_current_squad": player.id in squad_ids,
+        }
+    )
 
     return context
 
@@ -466,301 +502,162 @@ def generate_ai_prediction(gameweek: Gameweek, squad:None, manager_state:None) -
 
     player_context = build_player_context(gameweek, squad=squad)
 
+    # Captain candidates: ONLY players actually in the squad.
+    squad_ids = {p.id for p in squad} if squad else set()
+
+    captain_candidates = [
+        {
+            "id": p["id"],
+            "name": p["name"],
+            "position": p["position"],
+            "form": p["form"],
+            "xGI_season": p["xGI_season"],
+            "xGI_per_90": p["recent"]["xGI_per_90"],
+            "fdr": p["next_fixtures_fdr_avg"],
+            "status": p["status"],
+        }
+        for p in player_context if p["id"] in squad_ids
+    ]
+
+
     prompt = f"""
+
+CAPTAIN CANDIDATES:
+{json.dumps(captain_candidates, separators=(",", ":"))}
+
+FULL PLAYER POOL:
+{json.dumps(player_context, separators=(",", ":"))}
+
 You are an expert Fantasy Premier League analyst making decisions for {gameweek.name}.
 
-Your job is NOT to chase recent points.
-
-Your job is to identify players whose expected future FPL value is supported
-by reliable minutes, underlying statistics, fixture quality and sustainable form.
-
-DATA:
-{json.dumps(player_context, indent=2)}
+Your job is to identify players with the strongest expected future FPL value based on
+minutes, underlying statistics, fixtures and sustainable form.
 
 FIELD DEFINITIONS:
 
-- next_fixtures_fdr_avg:
-  Average difficulty of the next 5 unfinished fixtures.
-  1 = easiest, 5 = hardest.
+- next_fixtures_fdr_avg: Average difficulty of next 5 unfinished fixtures (1=easiest, 5=hardest).
+- xGI_season: Season-long expected goal involvement.
+- recent.xGI: Recent expected goal involvement.
+- recent.xGI_per_90: Recent xGI adjusted for minutes.
+- recent.minutes_per_game: Average recent minutes.
+- form: Current FPL form.
+- in_current_squad: Whether the player is currently owned.
 
-- xGI_season:
-  Season-long expected goal involvement.
+DECISION HIERARCHY:
 
-- recent.xGI:
-  Expected goal involvement accumulated over the recent gameweeks shown.
+1. Expected minutes
+2. Underlying quality
+3. Upcoming fixtures
+4. Sustainable recent trend
+5. Price/value
+6. Ownership/differential potential
 
-- recent.xGI_per_90:
-  Recent expected goal involvement adjusted for minutes.
+TRANSFER TARGETS:
 
-- recent.minutes_total:
-  Total minutes over the recent gameweeks.
-
-- recent.minutes_per_game:
-  Average minutes per recent gameweek.
-
-- recent.form_trend:
-  Indicates whether recent points are improving, stable or declining.
-
-IMPORTANT:
-The candidate_score is only a pre-filtering/ranking aid.
-Do NOT blindly follow it.
-
-==================================================
-DECISION HIERARCHY
-==================================================
-
-Apply these priorities in this order:
-
-1. EXPECTED MINUTES
-2. UNDERLYING QUALITY
-3. UPCOMING FIXTURES
-4. SUSTAINABLE RECENT TREND
-5. PRICE / VALUE
-6. OWNERSHIP / DIFFERENTIAL POTENTIAL
-
-Do NOT reverse this order.
-
-==================================================
-TRANSFER TARGET QUALITY FILTER
-==================================================
-
-A transfer target should normally be an established or clearly emerging
-first-team FPL asset.
-
-Prefer players who:
-
-- regularly play significant minutes
-- have a secure or improving starting role
-- have meaningful season-long xGI
-- have meaningful recent xGI
-- have good or improving underlying statistics
-- have reasonable upcoming fixtures
-- have sustainable recent form
-
-Do NOT recommend a player merely because:
-
-- he is cheap
-- he has low ownership
-- he has high current form
-- he scored heavily in one gameweek
-- he kept one or two clean sheets
-- he got one goal or assist
-- he has recently received bonus points
-
-Price and ownership are secondary factors.
-
-A cheap player is NOT automatically a good transfer target.
-
-==================================================
-ANTI-RECENCY RULE
-==================================================
-
-One or two good gameweeks do NOT constitute a reliable trend.
-
-If a player's recent points are mainly explained by:
-
-- clean sheets
-- one goal
-- one assist
-- unusually high finishing
-- a single exceptional performance
-- other isolated events
-
-then downgrade that player unless his underlying statistics also support the improvement.
-
-For defenders in particular:
-
-DO NOT recommend a defender primarily because of one or two clean sheets.
-
-Clean sheets must be supported by:
-- reliable minutes
+Prefer established or clearly emerging first-team players with:
+- reliable/improving minutes
+- meaningful season and recent underlying statistics
 - good fixtures
-- defensive potential
-- and preferably some attacking threat.
+- sustainable form
 
-==================================================
-ESTABLISHED PLAYER PRIORITY
-==================================================
+Do NOT recommend a player merely because of:
+- low price
+- low ownership
+- high current form
+- one or two clean sheets
+- one goal/assist
+- one exceptional performance
 
-When comparing a cheap/low-owned player against an established player,
-prefer the established player when their underlying numbers and expected
-minutes are clearly stronger.
+Recent points must be supported by underlying statistics or a genuine improvement
+in role, minutes or fixtures.
 
-Do NOT select a cheap differential simply because he has recently scored
-more FPL points.
-
-A lower-owned player should only beat an established player when there is
-strong evidence of a genuine improvement in:
-
-- role
-- minutes
-- xGI
-- xGI/90
-- recent underlying statistics
-- and/or fixtures.
-
-==================================================
-RECENT FORM
-==================================================
-
-Form matters, but it must be interpreted as a TREND rather than a single number.
-
-Consider:
-
-- points across multiple gameweeks
-- recent minutes
-- recent xGI
-- recent xGI/90
-- form_trend
-
-A player with form 10 but weak recent underlying statistics should NOT
-automatically beat a player with form 6 and strong/improving underlying data.
-
-==================================================
-POSITION-SPECIFIC RULES
-==================================================
+POSITION RULES:
 
 DEFENDERS:
-
-Do NOT judge defenders using xGI or xGI_season — these are attacking
-metrics and are largely irrelevant for defensive value.
-
-Judge defenders primarily on:
-
-1. expected minutes (nailed-on starter)
-2. clean_sheet potential — derived from team defensive strength and
-   upcoming fixture difficulty (next_fixtures_fdr_avg), NOT recent xGI
-3. xGC_season — LOWER is better (fewer expected goals conceded by
-   their team while they're on the pitch)
-4. defensive_contribution_per_90 — HIGHER is better. FPL awards 2 bonus
-   points whenever a defender records 10+ combined clearances, blocks,
-   interceptions and tackles (CBIT) in a match. A defender with high
-   defensive_contribution_per_90 has a realistic chance of hitting this
-   threshold regularly, which is a meaningful and repeatable points
-   source independent of clean sheets or attacking returns.
-5. recent clean_sheets count, as a secondary confirmation of trend
-6. attacking threat (xGI/set-piece involvement) — a BONUS only,
-   never the primary reason to select or drop a defender
-
-When comparing two defenders with similar fixtures and clean sheet
-potential, prefer the one with higher defensive_contribution_per_90.
-
-MIDFIELDERS / FORWARDS:
-
 Prioritize:
+1. Expected minutes
+2. Clean-sheet potential from team strength and fixtures
+3. xGC_season (lower is better)
+4. defensive_contribution_per_90 (higher is better)
+5. Recent clean sheets as secondary evidence
+6. Attacking threat only as a bonus
 
-1. expected minutes
+Do NOT use xGI/xGI_season as the primary measure for defenders.
+
+For defenders, 10+ defensive contributions (CBIT) in a match is the relevant threshold.
+
+MIDFIELDERS/FORWARDS:
+Prioritize:
+1. Expected minutes
 2. xGI_season
-3. recent xGI
+3. Recent xGI
 4. xGI_per_90
-5. upcoming fixtures
-6. sustained form
-7. defensive_contribution_per_90 — a minor bonus factor (2 extra points
-   at 12+ combined tackles/interceptions/clearances/blocks/recoveries
-   per match). Useful as a tiebreaker between two similar attacking
-   options, but should never outweigh priorities 1-6.
+5. Fixtures
+6. Sustainable form
+7. defensive_contribution_per_90 only as a minor tiebreaker
 
-==================================================
-PREMIUM COMPARISON
-==================================================
+For midfielders, 12+ defensive contributions is the relevant threshold.
 
-Before selecting a captain or transfer target, compare him against established
-high-priced and/or highly-owned players in the SAME position contained in DATA.
+PREMIUM COMPARISON:
 
-If selecting a lower-owned or cheaper player over an established premium,
-the reasoning MUST explain why the premium is currently inferior.
+Before selecting a captain or transfer target, compare the player against established
+expensive/high-owned players in the SAME position contained in DATA.
 
-Valid reasons include:
+Prefer the cheaper/lower-owned player over an established premium only when there is
+strong evidence from:
+- fixtures
+- underlying statistics
+- role/minutes
+- recent underlying trend
+- injury/news concerns affecting the premium
 
-- significantly worse fixtures
-- significantly weaker underlying statistics
-- poor recent underlying trend
-- reduced expected minutes
-- injury/news concerns
+Do not prefer a differential simply because of recent points.
 
-Do NOT reject a premium simply because another player had more points in
-one recent gameweek.
-
-==================================================
-AVAILABILITY
-==================================================
+AVAILABILITY:
 
 Never recommend a player with:
-
 - status "i" = injured
 - status "d" = doubtful
 - status "s" = suspended
 - status "u" = unavailable
 
-If a player has a concerning news flag or reduced chance of playing,
-downgrade him and explicitly mention it in reasoning if he is selected.
+If a selected player has concerning news or reduced chance of playing, mention it.
 
-==================================================
-CAPTAIN
-==================================================
+CAPTAIN:
 
-Captain selection should prioritize:
+- captain_id MUST have in_current_squad=true.
+- Only captain a currently owned player.
+- Prioritize expected minutes, attacking potential/xGI, fixtures and sustainable form.
+- Do not captain someone simply because of one big recent score.
+- captain_alternatives_considered must contain 2 genuine alternatives from the current squad.
 
-1. expected minutes
-2. attacking potential / xGI
-3. fixture quality
-4. sustainable form
+TRANSFER:
 
-Do not captain a player simply because he scored heavily last gameweek.
+- transfer_out_id MUST have in_current_squad=true.
+- transfer_in_id must NOT be in the current squad.
+- Prefer reliable minutes, first-team role, underlying quality, fixtures and sustainable form.
+- transfer_in price should normally be within ±0.5 of transfer_out price.
+- Up to +1.5 additional cost is acceptable only when clearly justified.
+- Never recommend a significantly more expensive player without explaining the price gap.
+- If there is no clearly worthwhile transfer, return null for BOTH transfer_in_id and transfer_out_id.
+- It is better to return null than recommend a weak transfer.
 
-The captain alternatives must be genuine alternatives, not random players.
+IMPORTANT:
 
-==================================================
-TRANSFER
-==================================================
+The candidate_score is only a ranking aid. Do NOT blindly follow it.
 
-Select the player with the strongest combination of:
-
-- reliable minutes
-- established/emerging first-team role
-- season xGI
-- recent xGI
-- xGI/90
-- fixture quality
-- sustainable form
-
-Price constraint: transfer_in_id's price should be close to
-transfer_out_id's price — within roughly ±0.5 price units, unless a
-significantly better option requires a small additional spend (up to
-+1.5) and you explicitly justify why the extra cost is worth it. Do
-NOT suggest a transfer_in far more expensive than transfer_out without
-explicit reasoning about the price gap.
-
-
-If no player is clearly good enough to recommend,
-return null for transfer_in_id.
-
-It is better to return null than to recommend a weak transfer target.
-
-
-transfer_out_id MUST be a player where "in_current_squad" is true in DATA.
-Never suggest transferring out a player not currently owned.
-If no player in the current squad is a reasonable transfer-out candidate,
-return null for both transfer_in_id and transfer_out_id.
-
-
-
-==================================================
-FINAL OUTPUT
-==================================================
+FINAL OUTPUT:
 
 Respond ONLY with valid JSON.
 
 Use the player's "id" field exactly as provided in DATA.
-
-Format:
 
 {{
     "captain_id": <player id>,
     "captain_alternatives_considered": [<player id>, <player id>],
     "transfer_in_id": <player id or null>,
     "transfer_out_id": <player id or null>,
-    "reasoning": "<3-4 sentences citing specific stats and explaining the decision>"
+    "reasoning": "<3-4 sentences citing specific stats and explaining the decisions>"
 }}
 """
 
@@ -816,11 +713,18 @@ Format:
     # Fetch players.
     # ------------------------------------------------------------------
 
-    captain = Player.objects.filter(id=captain_id, status="a").first()
+    captain, captain_was_fallback = _resolve_captain(captain_id, alternatives, squad)
 
     if not captain:
-        raise ValueError(f"AI selected invalid/unavailable captain: {captain_id}")
+        raise ValueError("No valid captain could be resolved from AI response or squad.")
 
+    reasoning = result["reasoning"]
+    if captain.id != captain_id:
+        reasoning = (
+            f"⚠️ The AI's original captain pick wasn't in your squad, so {captain.web_name} "
+            f"(your in-squad player with the best current form) was selected instead.\n\n{reasoning}"
+        )
+    
     transfer_in = None
     transfer_out = None
 
@@ -853,7 +757,7 @@ Format:
             "suggested_captain": captain,
             "suggested_transfer_in": transfer_in,
             "suggested_transfer_out": transfer_out,
-            "reasoning": result["reasoning"],
+            "reasoning": reasoning,
             "data_snapshot": {
                 "players_considered": player_context,
                 "captain_alternatives_considered": alternatives,
@@ -863,20 +767,32 @@ Format:
 
     if squad is not None and manager_state is not None:
         validation = validate_prediction(prediction, manager_state)
-        if not validation["is_valid"] or validation["recommend_hold"]:
+
+        captain_invalid = any("captain" in e.lower() for e in validation["errors"])
+        transfer_invalid = any(
+            "transfer" in e.lower() or "position" in e.lower() or "budget" in e.lower()
+            for e in validation["errors"]
+        )
+
+        if captain_invalid:
+            prediction.suggested_captain = None
+
+        if transfer_invalid or validation["recommend_hold"]:
             prediction.suggested_transfer_in = None
             prediction.suggested_transfer_out = None
-            if not validation["is_valid"]:
-                prediction.data_snapshot["validation_errors"] = validation["errors"]
-            if validation["recommend_hold"]:
-                prediction.data_snapshot["hold_reason"] = "No free transfer available — holding to avoid a point hit."
-            prediction.save()
-        else:
+
+        if not validation["is_valid"]:
+            prediction.data_snapshot["validation_errors"] = validation["errors"]
+
+        if validation["recommend_hold"]:
+            prediction.data_snapshot["hold_reason"] = "No free transfer available — holding to avoid a point hit."
+
+        if not transfer_invalid and not validation["recommend_hold"]:
             prediction.data_snapshot["hit_cost"] = validation["hit_cost"]
-            prediction.save()
+
+        prediction.save()
 
     return prediction
-
 # ---------------------------------------------------------------------------
 # Evaluation
 # ---------------------------------------------------------------------------
@@ -897,13 +813,29 @@ def evaluate_gameweek(gameweek, manager_state=None):
 
     ai_captain_points = None
     ai_was_correct_captain = None
+
     if ai_prediction.suggested_captain:
         stat = PlayerGameweekStat.objects.filter(
             player=ai_prediction.suggested_captain, gameweek=gameweek, is_final=True
         ).first()
+
         if stat:
             ai_captain_points = stat.points * captain_multiplier
-            ai_was_correct_captain = stat.points > 0
+
+            # "Correct" = matched the best-scoring player among the
+            # alternatives the AI actually considered, not just "scored
+            # above zero" (which nearly every captain does).
+            considered_ids = ai_prediction.data_snapshot.get(
+                "captain_alternatives_considered", []
+            ) + [ai_prediction.suggested_captain_id]
+
+            alt_stats = PlayerGameweekStat.objects.filter(
+                player_id__in=considered_ids, gameweek=gameweek, is_final=True
+            )
+
+            if alt_stats:
+                best_points = max(s.points for s in alt_stats)
+                ai_was_correct_captain = stat.points == best_points
 
     # ---------------------------------------------------------------
     # Transfer
@@ -1031,3 +963,25 @@ def build_squad_health_report(squad, current_gameweek) -> list[dict]:
             flags.append({"player": player, "flags": player_flags})
 
     return flags
+
+
+def _resolve_captain(captain_id, alternatives, squad):
+    """
+    Try the AI's captain pick, then its alternatives, then fall back to
+    the squad's own highest-form player. Never raises — always returns
+    a valid captain if the squad has at least one available player.
+    """
+    squad_ids = {p.id for p in squad} if squad else None
+    candidate_ids = [captain_id] + [aid for aid in alternatives if aid != captain_id]
+
+    for cid in candidate_ids:
+        player = Player.objects.filter(id=cid, status="a").first()
+        if player and (squad_ids is None or player.id in squad_ids):
+            return player, False  # False = no fallback needed
+
+    if squad:
+        available_squad = [p for p in squad if p.status == "a"]
+        if available_squad:
+            return max(available_squad, key=lambda p: float(p.form)), True  # True = fallback used
+
+    return None, True

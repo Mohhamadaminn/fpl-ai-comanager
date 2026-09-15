@@ -24,7 +24,7 @@ def send_deadline_reminder_task():
         return
 
     profile = FPLManagerProfile.objects.filter(user__username="fpl_manager").first()
-    if not profile or not profile.telegram_chat_id:
+    if not profile or not profile.telegram_chat_id or not profile.fpl_team_id:
         return
 
     from apps.accounts.services import get_manager_gameweek_state, sync_free_transfers
@@ -70,7 +70,7 @@ def send_weekly_squad_health_task():
         return
 
     profile = FPLManagerProfile.objects.filter(user__username="fpl_manager").first()
-    if not profile or not profile.telegram_chat_id:
+    if not profile or not profile.telegram_chat_id or not profile.fpl_team_id:
         return
 
     manager_state = get_manager_gameweek_state(profile.fpl_team_id, gw.fpl_id)

@@ -59,7 +59,7 @@ async def prediction(update: Update, context: ContextTypes.DEFAULT_TYPE):
     profile = await sync_to_async(
         lambda: FPLManagerProfile.objects.filter(user__username="fpl_manager").first()
     )()
-    if not profile:
+    if not profile or not profile.fpl_team_id:
         await update.message.reply_text("No team linked yet. Use /setteamid first.")
         return
 
@@ -155,7 +155,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     profile, gw = await sync_to_async(_get_data)()
 
-    if not profile:
+    if not profile or not profile.fpl_team_id:
         await update.message.reply_text("No team linked yet. Use /setteamid to get started.")
         return
 

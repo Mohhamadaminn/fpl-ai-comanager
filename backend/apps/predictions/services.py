@@ -1,3 +1,4 @@
+import hashlib
 import json
 
 from django.db import models
@@ -498,7 +499,12 @@ def build_player_context(
 # AI prediction
 # ---------------------------------------------------------------------------
 
-def generate_ai_prediction(gameweek: Gameweek, squad:None, manager_state:None) -> AIPrediction:
+def build_squad_fingerprint(squad) -> str:
+    ids = ",".join(str(p.id) for p in sorted(squad or [], key=lambda p: p.id))
+    return hashlib.sha256(ids.encode()).hexdigest()
+
+
+def generate_ai_prediction(gameweek: Gameweek, squad=None, manager_state=None, *, user) -> AIPrediction:
 
     player_context = build_player_context(gameweek, squad=squad)
 
@@ -752,8 +758,10 @@ Use the player's "id" field exactly as provided in DATA.
     # ------------------------------------------------------------------
 
     prediction, _ = AIPrediction.objects.update_or_create(
+        user=user,
         gameweek=gameweek,
         defaults={
+            "squad_fingerprint": build_squad_fingerprint(squad),
             "suggested_captain": captain,
             "suggested_transfer_in": transfer_in,
             "suggested_transfer_out": transfer_out,

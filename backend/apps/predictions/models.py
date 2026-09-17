@@ -4,7 +4,9 @@ from apps.fpl_data.models import Player, Gameweek
 
 
 class AIPrediction(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="ai_predictions")
     gameweek = models.ForeignKey(Gameweek, on_delete=models.CASCADE, related_name="ai_predictions")
+    squad_fingerprint = models.CharField(max_length=64, db_index=True)  # for cache
     suggested_captain = models.ForeignKey(Player, on_delete=models.SET_NULL, null=True, related_name="+")
     suggested_transfer_out = models.ForeignKey(Player, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
     suggested_transfer_in = models.ForeignKey(Player, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
@@ -15,7 +17,7 @@ class AIPrediction(models.Model):
 
     class Meta:
         constraints = [
-            models.UniqueConstraint(fields=["gameweek"], name="unique_ai_prediction_per_gameweek"),
+            models.UniqueConstraint(fields=["user", "gameweek"], name="unique_ai_prediction_per_gameweek"),
         ]
     
     def __str__(self):

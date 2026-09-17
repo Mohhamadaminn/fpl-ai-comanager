@@ -31,7 +31,9 @@ def send_deadline_reminder_task():
     sync_free_transfers(profile)
     manager_state = get_manager_gameweek_state(profile.fpl_team_id, gw.fpl_id)
     manager_state["free_transfers"] = profile.free_transfers
-    pred = generate_ai_prediction(gw, manager_state["squad"], manager_state)
+    pred = generate_ai_prediction(
+        gw, manager_state["squad"], manager_state, user=profile.user
+    )
 
     hold_reason = pred.data_snapshot.get("hold_reason") if pred.data_snapshot else None
     hit_cost = pred.data_snapshot.get("hit_cost", 0) if pred.data_snapshot else 0

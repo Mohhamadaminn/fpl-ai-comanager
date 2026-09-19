@@ -54,6 +54,9 @@ services:
 
   redis:
     image: redis:7-alpine
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
 
   celery-worker:
     build:
@@ -122,3 +125,4 @@ services:
 volumes:
   postgres_data:
   media_data:
+  redis_data:

@@ -61,6 +61,7 @@ def generate_prediction_task(self, user_id, gameweek_id, fpl_team_id, telegram_c
 
         cached = AIPrediction.objects.filter(gameweek=gameweek, squad_fingerprint=fingerprint).first()
         if cached:
+            logger.info(f"Cache hit for gameweek {gameweek.id}, fingerprint {fingerprint[:8]}")
             prediction, _ = AIPrediction.objects.update_or_create(
                 user=user, gameweek=gameweek,
                 defaults={
@@ -73,6 +74,7 @@ def generate_prediction_task(self, user_id, gameweek_id, fpl_team_id, telegram_c
                 },
             )
         else:
+            logger.info(f"Cache miss — calling Groq for gameweek {gameweek.id}, fingerprint {fingerprint[:8]}")
             prediction = generate_ai_prediction(
                 gameweek, manager_state["squad"], manager_state, user=user
             )

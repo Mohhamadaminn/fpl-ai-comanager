@@ -170,6 +170,10 @@ CELERY_BEAT_SCHEDULE = {
         "task": "apps.fpl_data.tasks.sync_bootstrap_task",
         "schedule": crontab(hour="*/6", minute=0),
     },
+    "sync-fpl-fixtures": {
+        "task": "apps.fpl_data.tasks.sync_fixtures_task",
+        "schedule": crontab(hour="*/6", minute=15),  # offset slightly from bootstrap
+    },
     "sync-fpl-live-stats": {
         "task": "apps.fpl_data.tasks.sync_live_stats_task",
         "schedule": crontab(minute="*/5"),
@@ -185,6 +189,6 @@ CELERY_BEAT_SCHEDULE = {
     "weekly-squad-health-check": {
         "task": "apps.notifications.tasks.send_weekly_squad_health_task",
         "schedule": crontab(day_of_week="friday", hour=20, minute=0),
-    }
+    },
 }
 

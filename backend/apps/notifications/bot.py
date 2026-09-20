@@ -43,6 +43,66 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "or /prediction to get this gameweek's suggestion."
     )
 
+async def fixtures(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    from apps.fpl_data.models import Gameweek, Fixture
+    from django.db import models
+    from apps.accounts.models import FPLManagerProfile
+    from apps.accounts.services import get_manager_gameweek_state
+
+    profile = await sync_to_async(
+        lambda: FPLManagerProfile.objects.filter(telegram_chat_id=update.effective_chat.id).first()
+    )()
+    if not profile or not profile.fpl_team_id:
+        await update.message.reply_text("No team linked yet. Use /setteamid first.")
+        return
+
+    gw = await sync_to_async(lambda: Gameweek.objects.filter(is_current=True).first())()
+    if not gw:
+        await update.message.reply_text("Couldn't find the current gameweek.")
+        return
+
+    def _get_fixtures():
+        state = get_manager_gameweek_state(profile.fpl_team_id, gw.fpl_id)
+        squad_teams = {p.team for p in state["squad"]}
+
+        seen_fixture_ids = set()
+        lines = []
+
+        for team in sorted(squad_teams, key=lambda t: t.name):
+            fixture = (
+                Fixture.objects.filter(finished=False)
+                .filter(models.Q(team_home=team) | models.Q(team_away=team))
+                .order_by("kickoff_time")
+                .first()
+            )
+            if not fixture:
+                lines.append(f"*{team.name}* — no upcoming fixture found")
+                continue
+
+            if fixture.id in seen_fixture_ids:
+                continue  # already shown from the other team's perspective
+            seen_fixture_ids.add(fixture.id)
+
+            if fixture.team_home_id == team.id:
+                home_team, away_team = team, fixture.team_away
+                fdr = fixture.difficulty_home
+            else:
+                home_team, away_team = fixture.team_home, team
+                fdr = fixture.difficulty_away
+
+            fdr_icon = "🟢" if fdr and fdr <= 2 else "🟡" if fdr == 3 else "🔴"
+            kickoff = fixture.kickoff_time.strftime("%a %H:%M") if fixture.kickoff_time else "TBD"
+
+            lines.append(f"{fdr_icon} *{home_team.short_name}* vs *{away_team.short_name}* — {kickoff}")
+
+        return lines
+
+    lines = await sync_to_async(_get_fixtures)()
+
+    message = f"📅 *Your Squad's Upcoming Fixtures*\n\n" + "\n".join(lines)
+    await update.message.reply_text(message, parse_mode="Markdown")
+
+
 async def prediction(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from apps.fpl_data.models import Gameweek
     from apps.accounts.models import FPLManagerProfile
@@ -120,6 +180,13 @@ async def my_team_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("No team ID set yet. Use /setteamid.")
 
 
+async def differentials(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    from apps.notifications.tasks import generate_differentials_task
+
+    await update.message.reply_text("Looking for differentials, one moment...")
+    await sync_to_async(generate_differentials_task.delay)(update.effective_chat.id)
+
+
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from apps.fpl_data.models import Gameweek
     from apps.accounts.models import FPLManagerProfile
@@ -161,9 +228,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = (
         "🤖 *FPL AI Co-Manager — Commands*\n\n"
         "/start — Get started and enable reminders\n"
+        "/fixtures — Show your squad's teams' next fixtures\n"
         "/setteamid — Link your FPL team (paste your team link)\n"
         "/myteamid — Show your linked team ID\n"
         "/prediction — Get this gameweek's AI suggestion\n"
+        "/differentials — Get 3 low-ownership picks worth watching\n"
         "/status — Show team ID, gameweek, deadline, free transfers, reminder status\n"
         "/help — Show this list"
         
@@ -175,9 +244,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def set_bot_commands(application: Application):
     commands = [
         BotCommand("start", "Get started and enable reminders"),
+        BotCommand("fixtures", "your players fixtures"),
         BotCommand("setteamid", "Link your FPL team"),
         BotCommand("myteamid", "Show your linked team ID"),
         BotCommand("prediction", "Get this gameweek's AI suggestion"),
+        BotCommand("differentials", "Get three differentials"),
         BotCommand("status", "Show team status and deadline"),
         BotCommand("help", "Show all commands"),
     ]
@@ -187,9 +258,11 @@ async def set_bot_commands(application: Application):
 def build_application():
     application = Application.builder().token(settings.TELEGRAM_BOT_TOKEN).post_init(set_bot_commands).build()
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("fixtures", fixtures))
     application.add_handler(CommandHandler("prediction", prediction))
     application.add_handler(setteamid_conversation)
     application.add_handler(CommandHandler("myteamid", my_team_id))
+    application.add_handler(CommandHandler("differentials", differentials))
     application.add_handler(CommandHandler("status", status))
     application.add_handler(CommandHandler("help", help_command))
     return application

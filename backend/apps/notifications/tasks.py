@@ -90,3 +90,41 @@ def send_weekly_squad_health_task():
 
     bot = Bot(token=settings.TELEGRAM_BOT_TOKEN)
     asyncio.run(bot.send_message(chat_id=profile.telegram_chat_id, text=message, parse_mode="Markdown"))
+
+
+
+@shared_task(rate_limit="10/m")
+def generate_differentials_task(telegram_chat_id):
+    from apps.fpl_data.models import Gameweek
+    from apps.predictions.services import (
+        get_top_differentials, explain_differentials,
+        _fixture_indicator, _xgi_indicator, _minutes_indicator,
+        _form_indicator, _ownership_indicator,
+    )
+
+    gw = Gameweek.objects.filter(is_current=True).first()
+    if not gw:
+        return
+
+    differentials = get_top_differentials(gw)
+    reasons = explain_differentials(differentials, gw)
+
+    if not differentials:
+        message = f"🔍 *Differentials — {gw.name}*\n\nNo strong low-ownership picks found this week."
+    else:
+        lines = [f"🔍 *Differentials — {gw.name}*\n"]
+        for d in differentials:
+            p = d["player"]
+            reason = reasons.get(str(p.id), "Strong underlying numbers at low ownership.")
+            indicators = "\n".join([
+                _fixture_indicator(d["next_fdr"]),
+                _xgi_indicator(d["recent"]),
+                _minutes_indicator(d["recent"]),
+                _form_indicator(p.form),
+                _ownership_indicator(p.selected_by_percent),
+            ])
+            lines.append(f"\n*{p.web_name}* ({p.selected_by_percent}% owned)\n{indicators}\n_{reason}_")
+        message = "\n".join(lines)
+
+    bot = Bot(token=settings.TELEGRAM_BOT_TOKEN)
+    asyncio.run(bot.send_message(chat_id=telegram_chat_id, text=message, parse_mode="Markdown"))

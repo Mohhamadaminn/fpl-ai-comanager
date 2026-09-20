@@ -164,10 +164,13 @@ def _build_recent_stats(player, current_gameweek, n=5, stats=None):
             "minutes_per_game": 0,
             "xGI_per_90": 0,
             "form_trend": "insufficient_data",
+            "xgi_by_gameweek": [],
         }
 
     # Reverse so the oldest GW comes first.
     stats = list(reversed(stats))
+
+    xgi_by_gameweek = [float(s.expected_goal_involvements) for s in stats]
 
     points = [stat.points for stat in stats]
     minutes = [stat.minutes for stat in stats]
@@ -234,7 +237,32 @@ def _build_recent_stats(player, current_gameweek, n=5, stats=None):
         "xGI_per_90": xgi_per_90,
 
         "form_trend": form_trend,
+        "xgi_by_gameweek": xgi_by_gameweek,
     }
+
+
+def _xgi_trend(recent):
+    """Compare xGI in recent games vs earlier games in the window.
+    Adapts to how many finished gameweeks are actually available —
+    critical early in a season when the full 5-game window doesn't exist yet."""
+    values = recent.get("xgi_by_gameweek", [])
+    n = len(values)
+
+    if n < 2:
+        return "limited_data", None
+
+    # Split whatever we have roughly in half, minimum 1 game per half.
+    split = max(1, n // 2)
+    first_half_avg = sum(values[:split]) / split
+    second_half_avg = sum(values[-split:]) / split
+
+    confidence = "low" if n < 4 else "normal"
+
+    if second_half_avg > first_half_avg + 0.15:
+        return "improving", confidence
+    if second_half_avg < first_half_avg - 0.15:
+        return "declining", confidence
+    return "stable", confidence
 
 
 # ---------------------------------------------------------------------------
@@ -499,9 +527,17 @@ def build_player_context(
 # AI prediction
 # ---------------------------------------------------------------------------
 
-def build_squad_fingerprint(squad) -> str:
-    ids = ",".join(str(p.id) for p in sorted(squad or [], key=lambda p: p.id))
-    return hashlib.sha256(ids.encode()).hexdigest()
+def build_squad_fingerprint(squad):
+    """Hash of squad player IDs + latest data sync time, so a fresh sync
+    (new injury news, form updates, etc.) invalidates old cached predictions
+    even if the squad composition itself hasn't changed."""
+    squad_ids_str = ",".join(str(p.id) for p in sorted(squad, key=lambda p: p.id))
+
+    latest_sync = Player.objects.order_by("-updated_at").first()
+    sync_marker = latest_sync.updated_at.isoformat() if latest_sync else "no-sync"
+
+    combined = f"{squad_ids_str}:{sync_marker}"
+    return hashlib.sha256(combined.encode()).hexdigest()
 
 
 def generate_ai_prediction(gameweek: Gameweek, squad=None, manager_state=None, *, user) -> AIPrediction:
@@ -993,3 +1029,132 @@ def _resolve_captain(captain_id, alternatives, squad):
             return max(available_squad, key=lambda p: float(p.form)), True  # True = fallback used
 
     return None, True
+
+
+def _next_single_fixture_difficulty(team):
+    """Difficulty of ONLY the very next unfinished fixture (not an average)."""
+    fixture = (
+        Fixture.objects.filter(finished=False)
+        .filter(models.Q(team_home=team) | models.Q(team_away=team))
+        .order_by("kickoff_time")
+        .first()
+    )
+    if not fixture:
+        return None
+    return fixture.difficulty_home if fixture.team_home_id == team.id else fixture.difficulty_away
+
+def _fixture_indicator(next_fdr):
+    if next_fdr is None:
+        return "❔ Fixture: unknown"
+    if next_fdr <= 2:
+        return "🟢 Fixture: very good"
+    if next_fdr == 3:
+        return "🟡 Fixture: average"
+    return "🔴 Fixture: tough"
+
+
+def _xgi_indicator(recent):
+    trend, confidence = _xgi_trend(recent)
+
+    if trend == "limited_data":
+        return "❔ xGI: not enough data yet"
+
+    label = {"improving": "🟢 xGI: upward", "declining": "🔴 xGI: downward", "stable": "🟡 xGI: stable"}[trend]
+
+    if confidence == "low":
+        label += " (early season, low confidence)"
+
+    return label
+
+
+def _minutes_indicator(recent):
+    mpg = recent["minutes_per_game"]
+    if mpg >= 75:
+        return "🟢 Minutes: reliable"
+    if mpg >= 45:
+        return "🟡 Minutes: rotation risk"
+    return "🔴 Minutes: bench risk"
+
+
+def _form_indicator(form):
+    form = float(form)
+    if form >= 6:
+        return "🟢 Form: good"
+    if form >= 3:
+        return "🟡 Form: average"
+    return "🔴 Form: poor"
+
+
+def _ownership_indicator(ownership):
+    ownership = float(ownership)
+    return "🟢 Ownership: low" if ownership < 5 else "🟡 Ownership: borderline"
+
+
+
+def get_top_differentials(gameweek, top_n=3, ownership_threshold=7.0, max_next_fdr=3):
+    eligible = Player.objects.filter(
+        status="a",
+        selected_by_percent__lt=ownership_threshold,
+    ).select_related("team")
+
+    scored = []
+    for player in eligible:
+        next_fdr = _next_single_fixture_difficulty(player.team)
+        if next_fdr is not None and next_fdr > max_next_fdr:
+            continue  # hard exclude — bad NEXT game, regardless of longer-term average
+
+        recent = _build_recent_stats(player, gameweek, n=5)
+        if not _is_transfer_candidate(player, recent):
+            continue
+
+        avg_fdr = _next_fixtures_difficulty(player.team)  # kept for scoring/context only
+        score = _candidate_score(player=player, recent=recent, fdr=avg_fdr)
+        scored.append({
+            "player": player, "recent": recent,
+            "next_fdr": next_fdr, "avg_fdr": avg_fdr, "score": score,
+        })
+
+    return sorted(scored, key=lambda x: x["score"], reverse=True)[:top_n]
+
+
+def explain_differentials(differentials, gameweek):
+    """One LLM call explaining all differentials together, to keep tokens low."""
+    if not differentials:
+        return {}
+
+    summary = [
+        {
+            "id": d["player"].id,
+            "name": d["player"].web_name,
+            "position": d["player"].position,
+            "ownership": float(d["player"].selected_by_percent),
+            "form": float(d["player"].form),
+            "xGI_season": round(float(d["player"].expected_goal_involvements), 2),
+            "next_fixtures_fdr_avg": d["avg_fdr"],
+        }
+        for d in differentials
+    ]
+
+    prompt = f"""For {gameweek.name}, here are {len(summary)} low-ownership FPL differential picks:
+
+{json.dumps(summary, indent=2)}
+
+For each player, write ONE short sentence (max 20 words) explaining why they're a good differential,
+citing their specific stats. Respond ONLY with valid JSON:
+{{"reasons": {{"<player_id>": "<one sentence>", ...}}}}"""
+
+    response = client.chat.completions.create(
+        model="openai/gpt-oss-20b",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.3,
+    )
+
+    raw = response.choices[0].message.content.strip()
+    if raw.startswith("```"):
+        raw = raw.replace("```json", "", 1).replace("```", "").strip()
+
+    try:
+        result = json.loads(raw)
+        return result.get("reasons", {})
+    except json.JSONDecodeError:
+        return {}

@@ -1044,6 +1044,7 @@ def _next_single_fixture_difficulty(team):
     return fixture.difficulty_home if fixture.team_home_id == team.id else fixture.difficulty_away
 
 def _fixture_indicator(next_fdr):
+
     if next_fdr is None:
         return "❔ Fixture: unknown"
     if next_fdr <= 2:
@@ -1101,13 +1102,23 @@ def get_top_differentials(gameweek, top_n=3, ownership_threshold=7.0, max_next_f
     for player in eligible:
         next_fdr = _next_single_fixture_difficulty(player.team)
         if next_fdr is not None and next_fdr > max_next_fdr:
-            continue  # hard exclude — bad NEXT game, regardless of longer-term average
+            continue
 
         recent = _build_recent_stats(player, gameweek, n=5)
         if not _is_transfer_candidate(player, recent):
             continue
 
-        avg_fdr = _next_fixtures_difficulty(player.team)  # kept for scoring/context only
+        # A differential specifically needs underlying justification —
+        # not just reliable minutes and a decent fixture. Hard-exclude
+        # anyone with a declining xGI trend or genuinely poor form,
+        # regardless of how well they score on other dimensions.
+        trend, _ = _xgi_trend(recent)
+        if trend == "declining":
+            continue
+        if float(player.form) < 3.5:
+            continue
+
+        avg_fdr = _next_fixtures_difficulty(player.team)
         score = _candidate_score(player=player, recent=recent, fdr=avg_fdr)
         scored.append({
             "player": player, "recent": recent,

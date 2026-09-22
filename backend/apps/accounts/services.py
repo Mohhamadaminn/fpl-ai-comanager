@@ -19,11 +19,18 @@ def get_manager_gameweek_state(fpl_team_id: int, gameweek_fpl_id: int):
     response.raise_for_status()
     data = response.json()
 
-    player_fpl_ids = [pick["element"] for pick in data["picks"]]
+    picks = data["picks"]
+
+    player_fpl_ids = [pick["element"] for pick in picks]
     squad = list(Player.objects.filter(fpl_id__in=player_fpl_ids))
 
     captain_fpl_id = next((p["element"] for p in data["picks"] if p["is_captain"]), None)
     vice_captain_fpl_id = next((p["element"] for p in data["picks"] if p["is_vice_captain"]), None)
+
+    positions = {
+        pick["element"]: pick["position"]
+        for pick in picks
+    }
 
     return {
         "squad": squad,
@@ -32,6 +39,7 @@ def get_manager_gameweek_state(fpl_team_id: int, gameweek_fpl_id: int):
         "chip_active": data.get("active_chip"),
         "captain_fpl_id": captain_fpl_id,
         "vice_captain_fpl_id": vice_captain_fpl_id,
+        "positions": positions,
     }
 
 def sync_free_transfers(profile):

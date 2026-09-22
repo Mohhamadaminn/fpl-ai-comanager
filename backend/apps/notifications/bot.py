@@ -103,6 +103,153 @@ async def fixtures(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(message, parse_mode="Markdown")
 
 
+async def myteam(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    from apps.fpl_data.models import Gameweek, PlayerGameweekStat
+    from apps.accounts.models import FPLManagerProfile
+    from apps.accounts.services import get_manager_gameweek_state
+
+    profile = await sync_to_async(
+        lambda: FPLManagerProfile.objects.filter(
+            telegram_chat_id=update.effective_chat.id
+        ).first()
+    )()
+
+    if not profile or not profile.fpl_team_id:
+        await update.message.reply_text(
+            "No team linked yet. Use /setteamid first."
+        )
+        return
+
+    gw = await sync_to_async(
+        lambda: Gameweek.objects.filter(is_current=True).first()
+    )()
+
+    if not gw:
+        await update.message.reply_text(
+            "Couldn't find the current gameweek."
+        )
+        return
+
+    def _get_team_points():
+        state = get_manager_gameweek_state(
+            profile.fpl_team_id,
+            gw.fpl_id,
+        )
+
+        squad = state["squad"]
+        positions = state["positions"]
+
+        captain_fpl_id = state["captain_fpl_id"]
+        vice_captain_fpl_id = state["vice_captain_fpl_id"]
+
+        stats_by_player = {
+            s.player_id: s
+            for s in PlayerGameweekStat.objects.filter(
+                gameweek=gw,
+                player__in=squad,
+            )
+        }
+
+        starting_xi = [
+            p for p in squad
+            if positions.get(p.fpl_id, 0) <= 11
+        ]
+
+        bench = [
+            p for p in squad
+            if positions.get(p.fpl_id, 0) > 11
+        ]
+
+        total_points = 0
+        sections = []
+
+        for pos, emoji, title in [
+            ("GKP", "🧤", "GOALKEEPER"),
+            ("DEF", "🛡", "DEFENDERS"),
+            ("MID", "🎯", "MIDFIELDERS"),
+            ("FWD", "⚡", "FORWARDS"),
+        ]:
+            players = [
+                p for p in starting_xi
+                if p.position == pos
+            ]
+
+            if not players:
+                continue
+
+            lines = [f"{emoji} *{title}*"]
+
+            for p in players:
+                stat = stats_by_player.get(p.id)
+                pts = stat.points if stat else 0
+
+                is_captain = p.fpl_id == captain_fpl_id
+                is_vice = p.fpl_id == vice_captain_fpl_id
+
+                multiplier = 2 if is_captain else 1
+                effective_pts = pts * multiplier
+                total_points += effective_pts
+
+                tag = (
+                    " (C)"
+                    if is_captain
+                    else " (VC)"
+                    if is_vice
+                    else ""
+                )
+
+                live_marker = (
+                    ""
+                    if (stat and stat.is_final)
+                    else " 🔴 LIVE"
+                    if stat
+                    else ""
+                )
+
+                lines.append(
+                    f"• {p.web_name}{tag}: "
+                    f"{effective_pts} pts{live_marker}"
+                )
+
+            sections.append("\n".join(lines))
+
+        bench_lines = ["🪑 *BENCH*"]
+
+        for p in bench:
+            stat = stats_by_player.get(p.id)
+            pts = stat.points if stat else 0
+
+            live_marker = (
+                ""
+                if (stat and stat.is_final)
+                else " 🔴 LIVE"
+                if stat
+                else ""
+            )
+
+            bench_lines.append(
+                f"• {p.web_name}: {pts} pts{live_marker}"
+            )
+
+        sections.append("\n".join(bench_lines))
+
+        return sections, total_points
+
+    sections, total_points = await sync_to_async(_get_team_points)()
+
+    message = (
+        f"⚽ *YOUR TEAM — {gw.name}*\n\n"
+        f"━━━━━━━━━━━━━━\n"
+        f"📊 Total: *{total_points} pts*\n"
+        f"━━━━━━━━━━━━━━\n\n"
+        + "\n\n".join(sections)
+    )
+
+    await update.message.reply_text(
+        message,
+        parse_mode="Markdown",
+    )
+
 async def prediction(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from apps.fpl_data.models import Gameweek
     from apps.accounts.models import FPLManagerProfile
@@ -180,6 +327,7 @@ async def my_team_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("No team ID set yet. Use /setteamid.")
 
 
+
 async def differentials(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from apps.notifications.tasks import generate_differentials_task
 
@@ -231,6 +379,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/fixtures — Show your squad's teams' next fixtures\n"
         "/setteamid — Link your FPL team (paste your team link)\n"
         "/myteamid — Show your linked team ID\n"
+        "/myteam — See your squad's live/final points for this gameweek\n"
         "/prediction — Get this gameweek's AI suggestion\n"
         "/differentials — Get 3 low-ownership picks worth watching\n"
         "/status — Show team ID, gameweek, deadline, free transfers, reminder status\n"
@@ -245,6 +394,7 @@ async def set_bot_commands(application: Application):
     commands = [
         BotCommand("start", "Get started and enable reminders"),
         BotCommand("fixtures", "your players fixtures"),
+        BotCommand("myteam", "your team"),
         BotCommand("setteamid", "Link your FPL team"),
         BotCommand("myteamid", "Show your linked team ID"),
         BotCommand("prediction", "Get this gameweek's AI suggestion"),
@@ -259,6 +409,7 @@ def build_application():
     application = Application.builder().token(settings.TELEGRAM_BOT_TOKEN).post_init(set_bot_commands).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("fixtures", fixtures))
+    application.add_handler(CommandHandler("myteam", myteam))
     application.add_handler(CommandHandler("prediction", prediction))
     application.add_handler(setteamid_conversation)
     application.add_handler(CommandHandler("myteamid", my_team_id))

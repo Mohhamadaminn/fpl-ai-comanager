@@ -109,6 +109,7 @@ class PlayerGameweekStat(models.Model):
     recoveries = models.PositiveIntegerField(default=0)
     tackles = models.PositiveIntegerField(default=0)
     defensive_contribution = models.PositiveIntegerField(default=0)
+    expected_goals_conceded = models.DecimalField(max_digits=5, decimal_places=2, default=0)
 
     is_final = models.BooleanField(default=False)  # True once the gameweek is officially finished
     updated_at = models.DateTimeField(auto_now=True)

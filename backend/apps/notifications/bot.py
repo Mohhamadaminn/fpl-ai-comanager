@@ -335,6 +335,35 @@ async def differentials(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await sync_to_async(generate_differentials_task.delay)(update.effective_chat.id)
 
 
+
+async def performance(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    from apps.fpl_data.services import get_last_finished_gameweek, check_rate_limit
+    from apps.fpl_data.tasks import generate_performance_task
+    from apps.accounts.models import FPLManagerProfile
+
+    rate_limit_error = await sync_to_async(check_rate_limit)(update.effective_chat.id)
+    if rate_limit_error:
+        await update.message.reply_text(rate_limit_error)
+        return
+
+    profile = await sync_to_async(
+        lambda: FPLManagerProfile.objects.filter(telegram_chat_id=update.effective_chat.id).first()
+    )()
+    if not profile or not profile.fpl_team_id:
+        await update.message.reply_text("No team linked yet. Use /setteamid first.")
+        return
+
+    gw = await sync_to_async(get_last_finished_gameweek)()
+    if not gw:
+        await update.message.reply_text("No finished gameweek to report on yet.")
+        return
+
+    await update.message.reply_text("Crunching the numbers, one moment...")
+    await sync_to_async(generate_performance_task.delay)(
+        profile.fpl_team_id, gw.id, update.effective_chat.id
+    )
+
+
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from apps.fpl_data.models import Gameweek
     from apps.accounts.models import FPLManagerProfile
@@ -382,6 +411,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/myteam — See your squad's live/final points for this gameweek\n"
         "/prediction — Get this gameweek's AI suggestion\n"
         "/differentials — Get 3 low-ownership picks worth watching\n"
+        "/performance — see your underperform and overperform players\n"
         "/status — Show team ID, gameweek, deadline, free transfers, reminder status\n"
         "/help — Show this list"
         
@@ -399,6 +429,7 @@ async def set_bot_commands(application: Application):
         BotCommand("myteamid", "Show your linked team ID"),
         BotCommand("prediction", "Get this gameweek's AI suggestion"),
         BotCommand("differentials", "Get three differentials"),
+        BotCommand("performance", "see which players are overperform or underperform"),
         BotCommand("status", "Show team status and deadline"),
         BotCommand("help", "Show all commands"),
     ]
@@ -414,6 +445,7 @@ def build_application():
     application.add_handler(setteamid_conversation)
     application.add_handler(CommandHandler("myteamid", my_team_id))
     application.add_handler(CommandHandler("differentials", differentials))
+    application.add_handler(CommandHandler("performance", performance))
     application.add_handler(CommandHandler("status", status))
     application.add_handler(CommandHandler("help", help_command))
     return application

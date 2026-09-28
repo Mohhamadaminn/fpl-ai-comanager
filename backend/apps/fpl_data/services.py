@@ -369,6 +369,7 @@ def format_squad_performance_message(fpl_team_id: int, gameweek: Gameweek, lang:
         if not blurb:
             blurb = "scored more than expected" if diff > 0 else "underdelivered on chances"
         blurb = sanitize_markdown(blurb)
+        blurb = enforce_rtl(blurb, lang)
         stat_line = f"{r['goals']}G {r['assists']}A, {r['minutes']}' | xG {r['xg']:.2f} xA {r['xa']:.2f}"
         return (
             f"• *{p.web_name}* ({p.position}) — *{verdict}* — {pts} pts ({t('expected', lang)} ~{xpts})\n"

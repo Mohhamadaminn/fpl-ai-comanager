@@ -1,5 +1,8 @@
 import requests
+from django.contrib.auth.models import User
 from apps.fpl_data.models import Player
+from apps.accounts.models import FPLManagerProfile
+
 
 FPL_BASE_URL = "https://fantasy.premierleague.com/api"
 
@@ -64,3 +67,22 @@ def sync_free_transfers(profile):
     profile.save(update_fields=["free_transfers", "last_synced_gameweek"])
 
     return new_free
+
+
+
+
+
+def get_or_create_profile_for_chat(chat_id: int) -> FPLManagerProfile:
+    """One profile per Telegram chat. Reuses an existing profile if this chat already has one."""
+    profile = FPLManagerProfile.objects.filter(telegram_chat_id=chat_id).first()
+    if profile:
+        return profile
+
+    user, _ = User.objects.get_or_create(username=f"tg_{chat_id}")
+    profile, _ = FPLManagerProfile.objects.get_or_create(
+        user=user, defaults={"telegram_chat_id": chat_id}
+    )
+    if profile.telegram_chat_id != chat_id:
+        profile.telegram_chat_id = chat_id
+        profile.save(update_fields=["telegram_chat_id"])
+    return profile

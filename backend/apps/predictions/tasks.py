@@ -8,6 +8,7 @@ from telegram import Bot
 from django.db import models
 
 from apps.fpl_data.models import Gameweek, Fixture
+from apps.fpl_data.services import sanitize_markdown, enforce_rtl
 from apps.accounts.models import FPLManagerProfile
 from apps.accounts.services import get_manager_gameweek_state
 from .models import AIPrediction, PredictionEvaluation
@@ -52,20 +53,24 @@ def evaluate_finished_gameweeks_task():
 
 
 @shared_task(rate_limit="10/m", bind=True, max_retries=2, default_retry_delay=30)
-def generate_prediction_task(self, user_id, gameweek_id, fpl_team_id, telegram_chat_id):
+def generate_prediction_task(self, user_id, gameweek_id, fpl_team_id, telegram_chat_id, lang="en"):
+    from apps.notifications.translations import t
     try:
         user = User.objects.get(id=user_id)
         gameweek = Gameweek.objects.get(id=gameweek_id)
         manager_state = get_manager_gameweek_state(fpl_team_id, gameweek.fpl_id)
         fingerprint = build_squad_fingerprint(manager_state["squad"])
 
-        cached = AIPrediction.objects.filter(gameweek=gameweek, squad_fingerprint=fingerprint).first()
+        cached = AIPrediction.objects.filter(
+            gameweek=gameweek, squad_fingerprint=fingerprint, language=lang
+        ).first()
         if cached:
-            logger.info(f"Cache hit for gameweek {gameweek.id}, fingerprint {fingerprint[:8]}")
+            logger.info(f"Cache hit for gameweek {gameweek.id}, lang {lang}, fingerprint {fingerprint[:8]}")
             prediction, _ = AIPrediction.objects.update_or_create(
                 user=user, gameweek=gameweek,
                 defaults={
                     "squad_fingerprint": fingerprint,
+                    "language": lang,
                     "suggested_captain": cached.suggested_captain,
                     "suggested_transfer_in": cached.suggested_transfer_in,
                     "suggested_transfer_out": cached.suggested_transfer_out,
@@ -74,9 +79,9 @@ def generate_prediction_task(self, user_id, gameweek_id, fpl_team_id, telegram_c
                 },
             )
         else:
-            logger.info(f"Cache miss — calling Groq for gameweek {gameweek.id}, fingerprint {fingerprint[:8]}")
+            logger.info(f"Cache miss — calling Groq for gameweek {gameweek.id}, lang {lang}, fingerprint {fingerprint[:8]}")
             prediction = generate_ai_prediction(
-                gameweek, manager_state["squad"], manager_state, user=user
+                gameweek, manager_state["squad"], manager_state, user=user, lang=lang
             )
 
         captain = prediction.suggested_captain.web_name if prediction.suggested_captain else "N/A"
@@ -98,7 +103,7 @@ def generate_prediction_task(self, user_id, gameweek_id, fpl_team_id, telegram_c
             f"📊 *{gameweek.name} AI Prediction*\n\n"
             f"🎖 Captain: *{captain} {captain_opponent}*\n"
             f"{transfer_line}\n\n"
-            f"💭 {prediction.reasoning}"
+            f"💭 {enforce_rtl(sanitize_markdown(prediction.reasoning), lang)}"
         )
 
         bot = Bot(token=settings.TELEGRAM_BOT_TOKEN)
@@ -114,7 +119,7 @@ def generate_prediction_task(self, user_id, gameweek_id, fpl_team_id, telegram_c
             bot = Bot(token=settings.TELEGRAM_BOT_TOKEN)
             asyncio.run(bot.send_message(
                 chat_id=telegram_chat_id,
-                text="Sorry, I couldn't generate your prediction right now. Please try again in a few minutes."
+                text=t("Sorry, I couldn't generate your prediction right now. Please try again in a few minutes.")
             ))
         except Exception:
             logger.exception("Also failed to send failure notification to user")

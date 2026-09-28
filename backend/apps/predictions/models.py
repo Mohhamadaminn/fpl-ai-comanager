@@ -13,6 +13,7 @@ class AIPrediction(models.Model):
     reasoning = models.TextField()
     data_snapshot = models.JSONField(default=dict)  # player stats/prices/form at prediction time
     created_at = models.DateTimeField(auto_now_add=True)
+    language = models.CharField(max_length=2, default="en")
 
 
     class Meta:

@@ -1,10 +1,11 @@
 import requests
-from groq import Groq
-import redis
-from django.conf import settings
-import json
-from decimal import Decimal
+import re
 import math
+import json
+import redis
+from groq import Groq
+from django.conf import settings
+from decimal import Decimal
 from .models import Team, Player, Gameweek, Fixture, PlayerGameweekStat
 
 FPL_BASE_URL = "https://fantasy.premierleague.com/api"
@@ -35,6 +36,26 @@ PERFORMANCE_BLURB_SCHEMA = {
 }
 
 client = Groq(api_key=settings.GROQ_API_KEY)
+
+
+
+def sanitize_markdown(text: str) -> str:
+    """Strip characters that break Telegram's legacy Markdown parser."""
+    if not text:
+        return text
+    return re.sub(r'([*_`\[\]])', '', text)
+
+
+RTL_MARK = "\u200F"
+
+def enforce_rtl(text: str, lang: str) -> str:
+    """Force RTL paragraph direction for Persian text that mixes in English
+    names/numbers, since Telegram's bidi algorithm can otherwise render the
+    whole line LTR if it starts with a Latin character."""
+    if lang == "fa" and text:
+        return RTL_MARK + text
+    return text
+
 
 
 def sync_bootstrap_data():
@@ -248,8 +269,7 @@ def squad_performance(squad: list, gameweek: Gameweek) -> list[dict]:
 
 
 
-def generate_performance_blurbs(results: list[dict]) -> dict[int, str]:
-    """results: output of squad_performance(), already filtered to over/under performers."""
+def generate_performance_blurbs(results: list[dict], lang: str = "en") -> dict[int, str]:
     if not results:
         return {}
 
@@ -263,10 +283,17 @@ def generate_performance_blurbs(results: list[dict]) -> dict[int, str]:
             f"xG={r['xg']:.2f}, xA={r['xa']:.2f}, label={r['label']}"
         )
 
+    language_instruction = (
+        "Write every sentence in Persian (Farsi), but keep player names in English exactly as given."
+        if lang == "fa" else
+        "Write every sentence in English."
+    )
+
     prompt = (
         "You are writing short Fantasy Premier League performance summaries for a Telegram bot. "
         "For each player below, write ONE punchy sentence (max ~20 words) explaining why they "
         "over- or under-performed their expected points this gameweek, using the actual stats given. "
+        f"{language_instruction} "
         "Be specific (mention goals/assists/xG/xA/minutes where relevant), vary the phrasing between "
         "players, and do not repeat the same sentence structure twice. No emojis, no hashtags.\n\n"
         "Players:\n" + "\n".join(player_lines)
@@ -276,10 +303,7 @@ def generate_performance_blurbs(results: list[dict]) -> dict[int, str]:
         model="openai/gpt-oss-120b",
         messages=[{"role": "user", "content": prompt}],
         temperature=0.5,
-        response_format={
-            "type": "json_schema",
-            "json_schema": PERFORMANCE_BLURB_SCHEMA,
-        },
+        response_format={"type": "json_schema", "json_schema": PERFORMANCE_BLURB_SCHEMA},
     )
 
     raw_content = response.choices[0].message.content.strip()
@@ -301,17 +325,17 @@ def generate_performance_blurbs(results: list[dict]) -> dict[int, str]:
 
 
 
-def format_squad_performance_message(fpl_team_id: int, gameweek: Gameweek) -> str:
-    cached = get_cached_performance_message(fpl_team_id, gameweek.id)
+def format_squad_performance_message(fpl_team_id: int, gameweek: Gameweek, lang: str = "en") -> str:
+    cached = get_cached_performance_message(fpl_team_id, gameweek.id, lang)
     if cached:
         return cached
 
     from apps.accounts.services import get_manager_gameweek_state
+    from apps.notifications.translations import t
 
     state = get_manager_gameweek_state(fpl_team_id, gameweek.fpl_id)
     positions = state["positions"]
 
-    # NEW — only players in the starting XI (position 1-11) count as notable
     starting_xi = [p for p in state["squad"] if positions.get(p.fpl_id, 0) <= 11]
     bench = [p for p in state["squad"] if positions.get(p.fpl_id, 0) > 11]
 
@@ -323,7 +347,6 @@ def format_squad_performance_message(fpl_team_id: int, gameweek: Gameweek) -> st
     neutral_count = sum(1 for r in results if r["label"] == "neutral")
     limited_count = sum(1 for r in results if r["label"] == "not_enough_minutes")
 
-    # NEW — bench notables get a separate, lower-key mention
     bench_over = [r for r in bench_results if r["label"] == "overperform"]
     bench_under = [r for r in bench_results if r["label"] == "underperform"]
 
@@ -331,65 +354,66 @@ def format_squad_performance_message(fpl_team_id: int, gameweek: Gameweek) -> st
     under.sort(key=lambda r: r["diff"])
 
     notable = over + under
-
     blurb_success = True
     try:
-        blurbs = generate_performance_blurbs(notable)
+        blurbs = generate_performance_blurbs(notable, lang)
     except Exception:
         blurbs = {}
         blurb_success = False
 
     def line(r):
-        p = r["player"]
+        p = r["player"]  # name stays English — never translated
         pts, xpts, diff = r["points"], r["xpts"], r["diff"]
-        verdict = "Overperform" if diff > 0 else "Underperform"
+        verdict = t("verdict_over", lang) if diff > 0 else t("verdict_under", lang)
         blurb = blurbs.get(p.fpl_id)
         if not blurb:
             blurb = "scored more than expected" if diff > 0 else "underdelivered on chances"
+        blurb = sanitize_markdown(blurb)
         stat_line = f"{r['goals']}G {r['assists']}A, {r['minutes']}' | xG {r['xg']:.2f} xA {r['xa']:.2f}"
         return (
-            f"• *{p.web_name}* ({p.position}) — *{verdict}* — {pts} pts (expected ~{xpts})\n"
+            f"• *{p.web_name}* ({p.position}) — *{verdict}* — {pts} pts ({t('expected', lang)} ~{xpts})\n"
             f"   _{blurb}_\n"
             f"   `{stat_line}`"
         )
 
-    parts = [f"📊 *{gameweek.name} — Who Beat Their Numbers?*\n"]
+    parts = [f"📊 *{gameweek.name} — {t('gw_title', lang)}*\n"]
 
     if over:
-        parts.append("🔥 *Overperformed*")
+        parts.append(f"🔥 *{t('overperformed', lang)}*")
         parts.extend(line(r) for r in over)
         parts.append("")
 
     if under:
-        parts.append("🧊 *Underperformed*")
+        parts.append(f"🧊 *{t('underperformed', lang)}*")
         parts.extend(line(r) for r in under)
         parts.append("")
 
     if bench_over or bench_under:
-        parts.append("🪑 *On the bench*")
+        parts.append(f"🪑 *{t('on_bench', lang)}*")
         for r in bench_over:
-            parts.append(f"• {r['player'].web_name} would've overperformed ({r['points']} pts vs {r['xpts']} xPts)")
+            parts.append(f"• {r['player'].web_name} — {r['points']} pts / {r['xpts']} xPts")
         for r in bench_under:
-            parts.append(f"• {r['player'].web_name} would've underperformed ({r['points']} pts vs {r['xpts']} xPts)")
+            parts.append(f"• {r['player'].web_name} — {r['points']} pts / {r['xpts']} xPts")
         parts.append("")
 
     footer_bits = []
     if neutral_count:
-        footer_bits.append(f"{neutral_count} played about as expected")
+        footer_bits.append(f"{neutral_count} {t('played_as_expected', lang)}")
     if limited_count:
-        footer_bits.append(f"{limited_count} didn't play enough minutes")
+        footer_bits.append(f"{limited_count} {t('limited_minutes', lang)}")
     if footer_bits:
         parts.append("ℹ️ " + ", ".join(footer_bits))
 
     if not over and not under:
-        parts.append("Nobody in your XI stood out this week — everyone performed close to expectations.")
+        parts.append(t("nobody_stood_out", lang))
 
     message = "\n".join(parts).strip()
 
     if blurb_success:
-        cache_performance_message(fpl_team_id, gameweek.id, message)
+        cache_performance_message(fpl_team_id, gameweek.id, lang, message)
 
     return message
+
 
 
 redis_client = redis.Redis.from_url(settings.CELERY_BROKER_URL)
@@ -399,17 +423,16 @@ RATE_LIMIT_GLOBAL_MAX_PER_MINUTE = 20  # protect overall Groq quota
 
 
 def check_rate_limit(chat_id: int) -> str | None:
-    """Returns an error message if rate-limited, else None."""
     user_key = f"perf:ratelimit:user:{chat_id}"
     if redis_client.get(user_key):
-        return "Slow down a bit — try again in a few seconds."
+        return "rate_limited"
 
     global_key = "perf:ratelimit:global"
     count = redis_client.incr(global_key)
     if count == 1:
         redis_client.expire(global_key, 60)
     if count > RATE_LIMIT_GLOBAL_MAX_PER_MINUTE:
-        return "Lots of requests right now — please try again in a minute."
+        return "rate_limited_global"
 
     redis_client.set(user_key, 1, ex=RATE_LIMIT_PER_USER_SECONDS)
     return None
@@ -419,11 +442,10 @@ def get_last_finished_gameweek():
     return Gameweek.objects.filter(finished=True).order_by("-fpl_id").first()
 
 
-def get_cached_performance_message(fpl_team_id: int, gameweek_id: int) -> str | None:
-    cached = redis_client.get(f"perf:msg:{fpl_team_id}:{gameweek_id}")
+def get_cached_performance_message(fpl_team_id: int, gameweek_id: int, lang: str) -> str | None:
+    cached = redis_client.get(f"perf:msg:{fpl_team_id}:{gameweek_id}:{lang}")
     return cached.decode("utf-8") if cached else None
 
 
-def cache_performance_message(fpl_team_id: int, gameweek_id: int, message: str):
-    # No expiry — a finished gameweek's stats never change, so this is valid forever.
-    redis_client.set(f"perf:msg:{fpl_team_id}:{gameweek_id}", message)
+def cache_performance_message(fpl_team_id: int, gameweek_id: int, lang: str, message: str):
+    redis_client.set(f"perf:msg:{fpl_team_id}:{gameweek_id}:{lang}", message)

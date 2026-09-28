@@ -13,48 +13,54 @@ from apps.fpl_data.models import (
 )
 from .models import AIPrediction, PredictionEvaluation
 
-
-PREDICTION_RESPONSE_SCHEMA = {
-    "name": "fpl_prediction",
-    "strict": True,
-    "schema": {
-        "type": "object",
-        "properties": {
-            "captain_id": {
-                "type": "integer",
-                "minimum": 1,
-            },
-            "captain_alternatives_considered": {
-                "type": "array",
-                "items": {
-                    "type": "integer",
-                    "minimum": 1,
+def build_prediction_schema(lang: str = "en") -> dict:
+    language_word = "Persian" if lang == "fa" else "English"
+    return {
+        "name": "fpl_prediction",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "captain_id": {"type": "integer", "minimum": 1},
+                "captain_alternatives_considered": {
+                    "type": "array",
+                    "items": {"type": "integer", "minimum": 1},
+                    "minItems": 2,
                 },
-                "minItems": 2,
+                "transfer_in_id": {"type": ["integer", "null"], "minimum": 1},
+                "transfer_out_id": {"type": ["integer", "null"], "minimum": 1},
+                "reasoning": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": (
+                        f"3-4 natural, conversational sentences in {language_word}, citing "
+                        "specific stats but written the way a knowledgeable friend would "
+                        "explain a decision casually — NOT like a stats printout. "
+                        "CRITICAL: player names and team names MUST remain in English exactly "
+                        "as given in the input data (e.g. 'Mohamed Salah', 'Arsenal') — never "
+                        f"transliterate or translate them, even though the rest of the sentence "
+                        f"is in {language_word}. "
+                        "NEVER write player IDs in the text, e.g. never write '(id 445)' or "
+                        "'id=445'. NEVER write raw field names like 'xGI', 'xGIseason', 'fdr', "
+                        "or 'form 8.0' — instead describe them in plain words, e.g. say the "
+                        "player 'is in great scoring form' instead of 'form 8.0', 'has created "
+                        "a lot of chances recently' instead of 'xGI 3.18', or 'has an easy run "
+                        "of fixtures' instead of 'fdr 3.0'. Numbers are fine when they read "
+                        "naturally inside a sentence (e.g. 'has been involved in 12 goals this "
+                        "season') but never as a bare label=value pair."
+                    ),
+                },
             },
-            "transfer_in_id": {
-                "type": ["integer", "null"],
-                "minimum": 1,
-            },
-            "transfer_out_id": {
-                "type": ["integer", "null"],
-                "minimum": 1,
-            },
-            "reasoning": {
-                "type": "string",
-                "minLength": 1,
-            },
+            "required": [
+                "captain_id",
+                "captain_alternatives_considered",
+                "transfer_in_id",
+                "transfer_out_id",
+                "reasoning",
+            ],
+            "additionalProperties": False,
         },
-        "required": [
-            "captain_id",
-            "captain_alternatives_considered",
-            "transfer_in_id",
-            "transfer_out_id",
-            "reasoning",
-        ],
-        "additionalProperties": False,
-    },
-}
+    }
 
 
 client = Groq(api_key=settings.GROQ_API_KEY)
@@ -540,7 +546,7 @@ def build_squad_fingerprint(squad):
     return hashlib.sha256(combined.encode()).hexdigest()
 
 
-def generate_ai_prediction(gameweek: Gameweek, squad=None, manager_state=None, *, user) -> AIPrediction:
+def generate_ai_prediction(gameweek: Gameweek, squad=None, manager_state=None, *, user, lang: str = "en") -> AIPrediction:
 
     player_context = build_player_context(gameweek, squad=squad)
 
@@ -561,8 +567,17 @@ def generate_ai_prediction(gameweek: Gameweek, squad=None, manager_state=None, *
         for p in player_context if p["id"] in squad_ids
     ]
 
+    language_instruction = (
+        "Write the 'reasoning' field in Persian (Farsi). Keep all player names, team names, "
+        "and stat labels (xG, xA, FDR, etc.) in English exactly as given — only the explanatory "
+        "sentences should be in Persian."
+        if lang == "fa" else
+        "Write the 'reasoning' field in English."
+    )
+
 
     prompt = f"""
+
 
 CAPTAIN CANDIDATES:
 {json.dumps(captain_candidates, separators=(",", ":"))}
@@ -675,14 +690,14 @@ CAPTAIN:
 
 TRANSFER:
 
+- transfer_in_id and transfer_out_id MUST be players in the exact same position
 - transfer_out_id MUST have in_current_squad=true.
 - transfer_in_id must NOT be in the current squad.
 - Prefer reliable minutes, first-team role, underlying quality, fixtures and sustainable form.
 - transfer_in price should normally be within ±0.5 of transfer_out price.
-- Up to +1.5 additional cost is acceptable only when clearly justified.
+- Up to +0.5 additional cost is acceptable only when clearly justified.
 - Never recommend a significantly more expensive player without explaining the price gap.
 - If there is no clearly worthwhile transfer, return null for BOTH transfer_in_id and transfer_out_id.
-- It is better to return null than recommend a weak transfer.
 
 IMPORTANT:
 
@@ -690,9 +705,28 @@ The candidate_score is only a ranking aid. Do NOT blindly follow it.
 
 FINAL OUTPUT:
 
+
+
+{language_instruction}
+
+IMPORTANT: Even though the reasoning text should be in Persian, EVERY player name and team
+name inside that text must stay in English exactly as written in the data above
+(e.g. write "Salah", never "صلاح"; write "Arsenal", never "آرسنال").
+
+
+Write "reasoning" like a knowledgeable friend explaining a decision casually — NOT like a
+stats printout. Never include player IDs or raw field names in the text.
+
+BAD:  "Haaland (id 445) has xGIseason 4.95 and form 8.0."
+GOOD: "Haaland has been electric in front of goal lately and is in the form of his life."
+
+BAD:  "Groß (form 11.2) is a better pick than Stach (form 3.5, xGIseason 1.28)."
+GOOD: "Groß has been in outstanding form recently, while Stach has gone quiet in front of goal."
+
 Respond ONLY with valid JSON.
 
 Use the player's "id" field exactly as provided in DATA.
+
 
 {{
     "captain_id": <player id>,
@@ -714,7 +748,7 @@ Use the player's "id" field exactly as provided in DATA.
         temperature=0.2,
         response_format={
             "type": "json_schema",
-            "json_schema": PREDICTION_RESPONSE_SCHEMA,
+            "json_schema": build_prediction_schema(lang),
         },
     )
 
@@ -782,7 +816,11 @@ Use the player's "id" field exactly as provided in DATA.
 
     # Enforce a hard price-gap ceiling regardless of what the AI reasoned,
     # since price constraints are a real FPL budget rule, not a soft preference.
-    MAX_PRICE_GAP = 1.5
+    MAX_PRICE_GAP = 0.5
+    if transfer_in and transfer_out and transfer_in.position != transfer_out.position:
+        transfer_in = None
+        transfer_out = None
+
     if transfer_in and transfer_out:
         price_gap = float(transfer_in.price) - float(transfer_out.price)
         if price_gap > MAX_PRICE_GAP:
@@ -793,21 +831,22 @@ Use the player's "id" field exactly as provided in DATA.
     # Save prediction.
     # ------------------------------------------------------------------
 
-    prediction, _ = AIPrediction.objects.update_or_create(
-        user=user,
-        gameweek=gameweek,
-        defaults={
-            "squad_fingerprint": build_squad_fingerprint(squad),
-            "suggested_captain": captain,
-            "suggested_transfer_in": transfer_in,
-            "suggested_transfer_out": transfer_out,
-            "reasoning": reasoning,
-            "data_snapshot": {
-                "players_considered": player_context,
-                "captain_alternatives_considered": alternatives,
+        prediction, _ = AIPrediction.objects.update_or_create(
+            user=user,
+            gameweek=gameweek,
+            defaults={
+                "squad_fingerprint": build_squad_fingerprint(squad),
+                "language": lang,
+                "suggested_captain": captain,
+                "suggested_transfer_in": transfer_in,
+                "suggested_transfer_out": transfer_out,
+                "reasoning": reasoning,
+                "data_snapshot": {
+                    "players_considered": player_context,
+                    "captain_alternatives_considered": alternatives,
+                },
             },
-        },
-    )
+        )
 
     if squad is not None and manager_state is not None:
         validation = validate_prediction(prediction, manager_state)

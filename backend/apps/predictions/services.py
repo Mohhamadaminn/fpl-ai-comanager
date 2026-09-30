@@ -63,6 +63,33 @@ def build_prediction_schema(lang: str = "en") -> dict:
     }
 
 
+DIFFERENTIALS_RESPONSE_SCHEMA = {
+    "name": "fpl_differentials",
+    "strict": True,
+    "schema": {
+        "type": "object",
+        "properties": {
+            "reasons": {
+                "type": "object",
+                "additionalProperties": {
+                    "type": "string",
+                    "description": (
+                        "One short, natural-sounding sentence (max 20 words) — like a "
+                        "football fan casually recommending a pick, not a stats readout. "
+                        "Mention only ONE or TWO stats, described in plain words, never as "
+                        "'label number' pairs (e.g. never 'form 5.0' or 'xGI 4.2'). The "
+                        "player's name MUST NOT appear in the sentence — refer to them only "
+                        "as 'this player' or the natural equivalent in the target language."
+                    ),
+                },
+            },
+        },
+        "required": ["reasons"],
+        "additionalProperties": False,
+    },
+}
+
+
 client = Groq(api_key=settings.GROQ_API_KEY)
 
 
@@ -400,99 +427,52 @@ def build_player_context(
         [player.team for player in players], n=5
     )
 
-
     candidates = []
 
     for player in players:
-
         recent = _build_recent_stats(
             player, gameweek, n=5, stats=recent_stats_by_player[player.id]
         )
-
 
         if not _is_transfer_candidate(player, recent):
             continue
 
         fdr = fixture_difficulties_by_team[player.team_id]
-
-        score = _candidate_score(
-            player=player,
-            recent=recent,
-            fdr=fdr,
-        )
-
-        candidates.append(
-            {
-                "player": player,
-                "recent": recent,
-                "fdr": fdr,
-                "score": score,
-            }
-        )
+        score = _candidate_score(player=player, recent=recent, fdr=fdr)
+        candidates.append({"player": player, "recent": recent, "fdr": fdr, "score": score})
 
     squad_ids = {p.id for p in squad} if squad else set()
 
-    # Ensure current squad players are always considered, even if they
-    # didn't pass the quality filter (needed so transfer_out has real options)
     if squad:
         candidate_player_ids = {c["player"].id for c in candidates}
         for player in squad:
             if player.id not in candidate_player_ids:
                 recent = _build_recent_stats(
                     player, gameweek, n=5,
-                    stats=recent_stats_by_player.get(player.id)  # was: recent_stats_by_player[player.id]
+                    stats=recent_stats_by_player.get(player.id)
                 )
-                fdr = fixture_difficulties_by_team.get(player.team_id)  # was: fixture_difficulties_by_team[player.team_id]
+                fdr = fixture_difficulties_by_team.get(player.team_id)
                 score = _candidate_score(player=player, recent=recent, fdr=fdr)
                 candidates.append({"player": player, "recent": recent, "fdr": fdr, "score": score})
-    # ------------------------------------------------------------------
-    # Keep several different types of players.
-    # ------------------------------------------------------------------
 
-    # Highest score overall.
-    by_score = sorted(
-        candidates,
-        key=lambda x: x["score"],
-        reverse=True,
-    )
+    by_score = sorted(candidates, key=lambda x: x["score"], reverse=True)
 
-    # Expensive / established players.
     premiums = sorted(
         candidates,
-        key=lambda x: (
-            float(x["player"].price),
-            x["player"].total_points,
-        ),
+        key=lambda x: (float(x["player"].price), x["player"].total_points),
         reverse=True,
     )[:premium_n]
 
-    # Best recent form.
-    in_form = sorted(
-        candidates,
-        key=lambda x: float(x["player"].form),
-        reverse=True,
-    )[:top_n]
+    in_form = sorted(candidates, key=lambda x: float(x["player"].form), reverse=True)[:top_n]
 
-    # Best underlying xGI.
     best_xgi = sorted(
-        candidates,
-        key=lambda x: float(x["player"].expected_goal_involvements),
-        reverse=True,
+        candidates, key=lambda x: float(x["player"].expected_goal_involvements), reverse=True
     )[:top_n]
 
-    # Combine and deduplicate.
     selected = {}
-
-    for item in (
-        premiums +
-        in_form +
-        best_xgi +
-        by_score[:candidate_n]
-    ):
+    for item in (premiums + in_form + best_xgi + by_score[:candidate_n]):
         selected[item["player"].id] = item
 
-    # Always include squad players in the final selection, even if they
-    # didn't make any of the above cuts.
     for item in candidates:
         if item["player"].id in squad_ids:
             selected[item["player"].id] = item
@@ -502,30 +482,37 @@ def build_player_context(
     for item in selected.values():
         player = item["player"]
         recent = item["recent"]
+        is_defensive = player.position in ("GKP", "DEF")
 
-        context.append(
-        {
+        entry = {
             "id": player.id,
             "name": player.web_name,
             "position": player.position,
             "team": player.team.short_name,
             "price": round(float(player.price), 1),
             "form": round(float(player.form), 1),
-            "xGI_season": round(float(player.expected_goal_involvements), 2),
-            "xGC_season": round(float(player.expected_goals_conceded), 2),
-            "defensive_contribution_per_90": round(float(player.defensive_contribution_per_90), 2),
+            "xGI_season": round(float(player.expected_goal_involvements), 1),
             "status": player.status,
-            **({"news": player.news} if player.news else {}),
-            **({"chance_of_playing": player.chance_of_playing_next_round} if player.status != "a" else {}),
             "recent": {
                 "xGI": recent["xGI"],
-                "xGI_per_90": recent["xGI_per_90"],
                 "minutes_per_game": recent["minutes_per_game"],
             },
             "next_fixtures_fdr_avg": item["fdr"],
             "in_current_squad": player.id in squad_ids,
         }
-    )
+
+        # Only relevant for defensive scoring — skip for MID/FWD to cut payload size.
+        if is_defensive:
+            entry["xGC_season"] = round(float(player.expected_goals_conceded), 1)
+
+        # Only include when it actually changes the picture — an available player
+        # doesn't need a chance_of_playing or empty news field taking up tokens.
+        if player.status != "a":
+            entry["chance_of_playing"] = player.chance_of_playing_next_round
+            if player.news:
+                entry["news"] = player.news[:120]  # cap length, injury blurbs can be long
+
+        context.append(entry)
 
     return context
 
@@ -560,7 +547,7 @@ def generate_ai_prediction(gameweek: Gameweek, squad=None, manager_state=None, *
             "position": p["position"],
             "form": p["form"],
             "xGI_season": p["xGI_season"],
-            "xGI_per_90": p["recent"]["xGI_per_90"],
+            "xGI_recent": p["recent"]["xGI"],
             "fdr": p["next_fixtures_fdr_avg"],
             "status": p["status"],
         }
@@ -1019,9 +1006,11 @@ def validate_prediction(prediction: AIPrediction, manager_state: dict) -> dict:
         "active_chip": active_chip,
     }
 
-def build_squad_health_report(squad, current_gameweek) -> list[dict]:
+def build_squad_health_report(squad, current_gameweek, lang: str = "en") -> list[dict]:
     """Checks each squad player for concerning signals: declining form/xGI,
     injury/suspension, or a tough upcoming fixture swing."""
+    from apps.notifications.translations import t
+
     flags = []
 
     for player in squad:
@@ -1029,18 +1018,18 @@ def build_squad_health_report(squad, current_gameweek) -> list[dict]:
 
         recent = _build_recent_stats(player, current_gameweek, n=5)
         if recent["form_trend"] == "declining":
-            player_flags.append(f"form declining (xGI last 5 GWs: {recent['xGI']})")
+            player_flags.append(t("form_declining", lang).format(xgi=recent["xGI"]))
 
         if player.status in ("i", "d", "s", "u"):
-            status_labels = {"i": "injured", "d": "doubtful", "s": "suspended", "u": "unavailable"}
-            note = status_labels.get(player.status, player.status)
+            status_key = {"i": "status_injured", "d": "status_doubtful", "s": "status_suspended", "u": "status_unavailable"}
+            note = t(status_key.get(player.status, "status_unavailable"), lang)
             if player.news:
                 note += f" — {player.news}"
             player_flags.append(note)
 
         fdr = _next_fixtures_difficulty(player.team)
         if fdr is not None and fdr >= 4:
-            player_flags.append(f"tough fixtures ahead (avg FDR {fdr})")
+            player_flags.append(t("tough_fixtures_ahead", lang).format(fdr=fdr))
 
         if player_flags:
             flags.append({"player": player, "flags": player_flags})
@@ -1082,52 +1071,58 @@ def _next_single_fixture_difficulty(team):
         return None
     return fixture.difficulty_home if fixture.team_home_id == team.id else fixture.difficulty_away
 
-def _fixture_indicator(next_fdr):
-
+def _fixture_indicator(next_fdr, lang="en"):
+    from apps.notifications.translations import t
     if next_fdr is None:
-        return "❔ Fixture: unknown"
+        return f"❔ {t('fixture_unknown', lang)}"
     if next_fdr <= 2:
-        return "🟢 Fixture: very good"
+        return f"🟢 {t('fixture_very_good', lang)}"
     if next_fdr == 3:
-        return "🟡 Fixture: average"
-    return "🔴 Fixture: tough"
+        return f"🟡 {t('fixture_average', lang)}"
+    return f"🔴 {t('fixture_tough', lang)}"
 
 
-def _xgi_indicator(recent):
+def _xgi_indicator(recent, lang="en"):
+    from apps.notifications.translations import t
     trend, confidence = _xgi_trend(recent)
 
     if trend == "limited_data":
-        return "❔ xGI: not enough data yet"
+        return f"❔ {t('xgi_no_data', lang)}"
 
-    label = {"improving": "🟢 xGI: upward", "declining": "🔴 xGI: downward", "stable": "🟡 xGI: stable"}[trend]
+    key = {"improving": "xgi_up", "declining": "xgi_down", "stable": "xgi_stable"}[trend]
+    emoji = {"improving": "🟢", "declining": "🔴", "stable": "🟡"}[trend]
+    label = f"{emoji} {t(key, lang)}"
 
     if confidence == "low":
-        label += " (early season, low confidence)"
+        label += f" {t('low_confidence_note', lang)}"
 
     return label
 
 
-def _minutes_indicator(recent):
+def _minutes_indicator(recent, lang="en"):
+    from apps.notifications.translations import t
     mpg = recent["minutes_per_game"]
     if mpg >= 75:
-        return "🟢 Minutes: reliable"
+        return f"🟢 {t('minutes_reliable', lang)}"
     if mpg >= 45:
-        return "🟡 Minutes: rotation risk"
-    return "🔴 Minutes: bench risk"
+        return f"🟡 {t('minutes_rotation_risk', lang)}"
+    return f"🔴 {t('minutes_bench_risk', lang)}"
 
 
-def _form_indicator(form):
+def _form_indicator(form, lang="en"):
+    from apps.notifications.translations import t
     form = float(form)
     if form >= 6:
-        return "🟢 Form: good"
+        return f"🟢 {t('form_good', lang)}"
     if form >= 3:
-        return "🟡 Form: average"
-    return "🔴 Form: poor"
+        return f"🟡 {t('form_average', lang)}"
+    return f"🔴 {t('form_poor', lang)}"
 
 
-def _ownership_indicator(ownership):
+def _ownership_indicator(ownership, lang="en"):
+    from apps.notifications.translations import t
     ownership = float(ownership)
-    return "🟢 Ownership: low" if ownership < 5 else "🟡 Ownership: borderline"
+    return f"🟢 {t('ownership_low', lang)}" if ownership < 5 else f"🟡 {t('ownership_borderline', lang)}"
 
 
 
@@ -1167,7 +1162,7 @@ def get_top_differentials(gameweek, top_n=3, ownership_threshold=7.0, max_next_f
     return sorted(scored, key=lambda x: x["score"], reverse=True)[:top_n]
 
 
-def explain_differentials(differentials, gameweek):
+def explain_differentials(differentials, gameweek, lang: str = "en"):
     """One LLM call explaining all differentials together, to keep tokens low."""
     if not differentials:
         return {}
@@ -1185,12 +1180,23 @@ def explain_differentials(differentials, gameweek):
         for d in differentials
     ]
 
+    language_word = "Persian" if lang == "fa" else "English"
+    language_instruction = (
+        f"Write each sentence in {language_word}. Player names MUST stay in English exactly "
+        "as given (e.g. 'Bruno Fernandes', not a translated/transliterated version), even "
+        f"though the rest of the sentence is in {language_word}. Never write raw stat labels "
+        "like 'xGI_season' or 'fdr' in the sentence — describe them naturally instead "
+        "(e.g. 'has created a lot of chances' instead of 'xGI 4.2')."
+    )
+
     prompt = f"""For {gameweek.name}, here are {len(summary)} low-ownership FPL differential picks:
 
 {json.dumps(summary, indent=2)}
 
 For each player, write ONE short sentence (max 20 words) explaining why they're a good differential,
-citing their specific stats. Respond ONLY with valid JSON:
+citing their specific stats in natural language. {language_instruction}
+
+Respond ONLY with valid JSON:
 {{"reasons": {{"<player_id>": "<one sentence>", ...}}}}"""
 
     response = client.chat.completions.create(
@@ -1207,4 +1213,4 @@ citing their specific stats. Respond ONLY with valid JSON:
         result = json.loads(raw)
         return result.get("reasons", {})
     except json.JSONDecodeError:
-        return {}
+        return {}   

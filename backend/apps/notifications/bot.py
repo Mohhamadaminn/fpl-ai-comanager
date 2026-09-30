@@ -358,9 +358,16 @@ async def my_team_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def differentials(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from apps.notifications.tasks import generate_differentials_task
+    from apps.accounts.models import FPLManagerProfile
+    from apps.notifications.translations import t
 
-    await update.message.reply_text("Looking for differentials, one moment...")
-    await sync_to_async(generate_differentials_task.delay)(update.effective_chat.id)
+    profile = await sync_to_async(
+        lambda: FPLManagerProfile.objects.filter(telegram_chat_id=update.effective_chat.id).first()
+    )()
+    lang = profile.preferred_language if profile else "en"
+
+    await update.message.reply_text(t("differentials_searching", lang))
+    await sync_to_async(generate_differentials_task.delay)(update.effective_chat.id, lang)
 
 
 
@@ -399,10 +406,10 @@ async def performance(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def language_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🇬🇧 English", callback_data="lang_en")],
-        [InlineKeyboardButton("🇮🇷 فارسی", callback_data="lang_fa")],
+        [InlineKeyboardButton("English", callback_data="lang_en")],
+        [InlineKeyboardButton("فارسی", callback_data="lang_fa")],
     ])
-    await update.message.reply_text("Choose your language / زبان خود را انتخاب کنید:", reply_markup=keyboard)
+    await update.message.reply_text("Choose Your Language: \n زبان خود را انتخاب کنید:", reply_markup=keyboard)
 
 
 async def language_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -479,16 +486,16 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def set_bot_commands(application: Application):
     en_commands = [
-        BotCommand("start", "Get started and enable reminders"),
-        BotCommand("fixtures", "your players fixtures"),
-        BotCommand("myteam", "your team"),
+        BotCommand("start", "Start the bot and enable reminders"),
+        BotCommand("fixtures", "See your squad's next fixtures"),
+        BotCommand("myteam", "View your live gameweek points"),
         BotCommand("setteamid", "Link your FPL team"),
         BotCommand("myteamid", "Show your linked team ID"),
-        BotCommand("prediction", "Get this gameweek's AI suggestion"),
-        BotCommand("differentials", "Get three differentials"),
-        BotCommand("performance", "see which players are overperform or underperform"),
-        BotCommand("status", "Show team status and deadline"),
-        BotCommand("language", "Change language"),
+        BotCommand("prediction", "Get an AI captain & transfer pick"),
+        BotCommand("differentials", "Find low-ownership players worth watching"),
+        BotCommand("performance", "See who over- or underperformed"),
+        BotCommand("status", "Check team info and deadline"),
+        BotCommand("language", "Change your language"),
         BotCommand("help", "Show all commands"),
     ]
 

@@ -328,7 +328,7 @@ def generate_performance_blurbs(results: list[dict], lang: str = "en") -> dict[i
 def format_squad_performance_message(fpl_team_id: int, gameweek: Gameweek, lang: str = "en") -> str:
     cached = get_cached_performance_message(fpl_team_id, gameweek.id, lang)
     if cached:
-        return cached
+        return enforce_rtl(cached, lang)
 
     from apps.accounts.services import get_manager_gameweek_state
     from apps.notifications.translations import t
@@ -413,7 +413,7 @@ def format_squad_performance_message(fpl_team_id: int, gameweek: Gameweek, lang:
     if blurb_success:
         cache_performance_message(fpl_team_id, gameweek.id, lang, message)
 
-    return message
+    return enforce_rtl(message, lang)
 
 
 

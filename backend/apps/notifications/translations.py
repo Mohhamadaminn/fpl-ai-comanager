@@ -139,6 +139,55 @@ TRANSLATIONS = {
         "en": "No team ID set yet. Use /setteamid.",
         "fa": "هنوز شناسه تیمی ثبت نشده. از /setteamid استفاده کن.",
     },
+
+
+    # --- /differentials ---
+    "differentials_searching": {
+        "en": "Looking for differentials, one moment...",
+        "fa": "دارم دنبال بازیکنای کم‌انتخاب می‌گردم، یه لحظه...",
+    },
+    "differentials_title": {"en": "Differentials", "fa": "بازیکنان کم‌انتخاب"},
+    "no_differentials": {
+        "en": "No strong low-ownership picks found this week.",
+        "fa": "این هفته گزینه قوی کم‌انتخاب پیدا نشد.",
+    },
+    "owned": {"en": "owned", "fa": "انتخاب‌شده"},
+
+    # --- deadline reminder ---
+    "deadline_warning": {"en": "deadline in less than 24h!", "fa": "کمتر از ۲۴ ساعت تا ددلاین!"},
+    "captain_label": {"en": "Captain", "fa": "کاپیتان"},
+
+    # --- weekly squad health ---
+    "squad_check_title": {"en": "Weekly Squad Check", "fa": "بررسی هفتگی تیم"},
+    "no_concerns": {"en": "No concerns — your squad looks healthy.", "fa": "نگرانی خاصی نیست — تیمت وضعیت خوبی داره."},
+
+
+    # --- indicators (differentials) ---
+    "fixture_unknown": {"en": "Fixture: unknown", "fa": "بازی: نامشخص"},
+    "fixture_very_good": {"en": "Fixture: very good", "fa": "بازی: خیلی خوب"},
+    "fixture_average": {"en": "Fixture: average", "fa": "بازی: متوسط"},
+    "fixture_tough": {"en": "Fixture: tough", "fa": "بازی: سخت"},
+    "xgi_no_data": {"en": "xGI: not enough data yet", "fa": "xGI: داده کافی نیست"},
+    "xgi_up": {"en": "xGI: upward", "fa": "xGI: صعودی"},
+    "xgi_down": {"en": "xGI: downward", "fa": "xGI: نزولی"},
+    "xgi_stable": {"en": "xGI: stable", "fa": "xGI: پایدار"},
+    "low_confidence_note": {"en": "(early season, low confidence)", "fa": "(اوایل فصل، اطمینان پایین)"},
+    "minutes_reliable": {"en": "Minutes: reliable", "fa": "دقایق بازی: قابل‌اعتماد"},
+    "minutes_rotation_risk": {"en": "Minutes: rotation risk", "fa": "دقایق بازی: احتمال تعویض"},
+    "minutes_bench_risk": {"en": "Minutes: bench risk", "fa": "دقایق بازی: احتمال نیمکت‌نشینی"},
+    "form_good": {"en": "Form: good", "fa": "فرم: خوب"},
+    "form_average": {"en": "Form: average", "fa": "فرم: متوسط"},
+    "form_poor": {"en": "Form: poor", "fa": "فرم: ضعیف"},
+    "ownership_low": {"en": "Ownership: low", "fa": "درصد انتخاب: پایین"},
+    "ownership_borderline": {"en": "Ownership: borderline", "fa": "درصد انتخاب: مرزی"},
+
+    # --- squad health flags ---
+    "form_declining": {"en": "form declining (xGI last 5 GWs: {xgi})", "fa": "افت فرم (xGI پنج بازی اخیر: {xgi})"},
+    "status_injured": {"en": "injured", "fa": "مصدوم"},
+    "status_doubtful": {"en": "doubtful", "fa": "مشکوک به بازی"},
+    "status_suspended": {"en": "suspended", "fa": "محروم"},
+    "status_unavailable": {"en": "unavailable", "fa": "غایب"},
+    "tough_fixtures_ahead": {"en": "tough fixtures ahead (avg FDR {fdr})", "fa": "بازی‌های سخت پیش رو (میانگین FDR {fdr})"},
     
 }
 

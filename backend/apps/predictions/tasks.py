@@ -58,7 +58,9 @@ def generate_prediction_task(self, user_id, gameweek_id, fpl_team_id, telegram_c
     try:
         user = User.objects.get(id=user_id)
         gameweek = Gameweek.objects.get(id=gameweek_id)
+        profile = FPLManagerProfile.objects.get(user=user) 
         manager_state = get_manager_gameweek_state(fpl_team_id, gameweek.fpl_id)
+        manager_state["free_transfers"] = profile.free_transfers
         fingerprint = build_squad_fingerprint(manager_state["squad"])
 
         cached = AIPrediction.objects.filter(

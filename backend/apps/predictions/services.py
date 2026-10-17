@@ -818,22 +818,22 @@ Use the player's "id" field exactly as provided in DATA.
     # Save prediction.
     # ------------------------------------------------------------------
 
-        prediction, _ = AIPrediction.objects.update_or_create(
-            user=user,
-            gameweek=gameweek,
-            defaults={
-                "squad_fingerprint": build_squad_fingerprint(squad),
-                "language": lang,
-                "suggested_captain": captain,
-                "suggested_transfer_in": transfer_in,
-                "suggested_transfer_out": transfer_out,
-                "reasoning": reasoning,
-                "data_snapshot": {
-                    "players_considered": player_context,
-                    "captain_alternatives_considered": alternatives,
-                },
+    prediction, _ = AIPrediction.objects.update_or_create(
+        user=user,
+        gameweek=gameweek,
+        defaults={
+            "squad_fingerprint": build_squad_fingerprint(squad),
+            "language": lang,
+            "suggested_captain": captain,
+            "suggested_transfer_in": transfer_in,
+            "suggested_transfer_out": transfer_out,
+            "reasoning": reasoning,
+            "data_snapshot": {
+                "players_considered": player_context,
+                "captain_alternatives_considered": alternatives,
             },
-        )
+        },
+    )
 
     if squad is not None and manager_state is not None:
         validation = validate_prediction(prediction, manager_state)
@@ -1182,11 +1182,16 @@ def explain_differentials(differentials, gameweek, lang: str = "en"):
 
     language_word = "Persian" if lang == "fa" else "English"
     language_instruction = (
-        f"Write each sentence in {language_word}. Player names MUST stay in English exactly "
-        "as given (e.g. 'Bruno Fernandes', not a translated/transliterated version), even "
-        f"though the rest of the sentence is in {language_word}. Never write raw stat labels "
-        "like 'xGI_season' or 'fdr' in the sentence — describe them naturally instead "
-        "(e.g. 'has created a lot of chances' instead of 'xGI 4.2')."
+        f"Write the reasoning in fluent, natural, idiomatic {language_word}, "
+        "as a knowledgeable FPL analyst, not as a translator. Use natural sentence "
+        "structures and football terminology appropriate to the language. Avoid "
+        "literal translations of English expressions and awkward phrasing. "
+        "Keep all player names and team names in English exactly as given; never "
+        "translate or transliterate them. Never expose raw field names such as "
+        "'xGI_season' or 'fdr'. Explain statistics naturally and focus on what they "
+        "mean for the recommendation rather than listing numbers mechanically. "
+        "Keep the analysis concise, coherent, and evidence-based. Do not invent "
+        "statistics or claims unsupported by the provided data."
     )
 
     prompt = f"""For {gameweek.name}, here are {len(summary)} low-ownership FPL differential picks:

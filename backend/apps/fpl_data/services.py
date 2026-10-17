@@ -450,3 +450,192 @@ def get_cached_performance_message(fpl_team_id: int, gameweek_id: int, lang: str
 
 def cache_performance_message(fpl_team_id: int, gameweek_id: int, lang: str, message: str):
     redis_client.set(f"perf:msg:{fpl_team_id}:{gameweek_id}:{lang}", message)
+
+
+
+
+COMPARISON_RESPONSE_SCHEMA = {
+    "name": "fpl_player_comparison",
+    "strict": True,
+    "schema": {
+        "type": "object",
+        "properties": {
+            "verdict": {
+                "type": "string",
+                "minLength": 1,
+                "description": (
+                    "2-3 natural, conversational sentences explaining why the winner is the "
+                    "better pick between these two same-position players — like a knowledgeable "
+                    "friend giving advice, not a stats readout. Whenever you refer to a player, "
+                    "use the placeholder {player_<id>} (e.g. {player_123}) with the id from the "
+                    "input data — NEVER write a player's actual name. Cite 1-2 of the most "
+                    "compelling stats described in plain words, never as raw 'label number' "
+                    "pairs (e.g. never 'form 8.0' or 'xGI 4.2')."
+                ),
+            },
+        },
+        "required": ["verdict"],
+        "additionalProperties": False,
+    },
+}
+
+
+def _substitute_player_placeholders(text: str, id_to_name: dict) -> str:
+    def _replace(match):
+        pid = int(match.group(1))
+        return id_to_name.get(pid, match.group(0))
+    return re.sub(r'\{player_(\d+)\}', _replace, text)
+
+
+def generate_comparison_verdict(entry_a: dict, entry_b: dict, winner_id: int, gameweek, lang: str = "en") -> str:
+    low_id, high_id = sorted([entry_a["id"], entry_b["id"]])
+    cache_key = f"compare:verdict:{low_id}:{high_id}:{gameweek.id}:{lang}"
+    cached = redis_client.get(cache_key)
+    if cached:
+        return cached.decode("utf-8")
+
+    language_word = "Persian" if lang == "fa" else "English"
+
+    summary = {
+        "player_a": {"id": entry_a["id"], "position": entry_a["position"],
+                     **{k: v["value"] for k, v in entry_a["breakdown"].items()}, "score": entry_a["score"]},
+        "player_b": {"id": entry_b["id"], "position": entry_b["position"],
+                     **{k: v["value"] for k, v in entry_b["breakdown"].items()}, "score": entry_b["score"]},
+        "winner_id": winner_id,
+    }
+
+    prompt = f"""Compare these two FPL players for {gameweek.name}, both in the same position:
+
+{json.dumps(summary, indent=2)}
+
+Player with id {winner_id} scores higher overall. Write a short verdict (2-3 sentences) in
+{language_word} explaining why, citing 1-2 of the most compelling stats in natural language.
+
+Whenever you refer to a player, use {{player_<id>}} (e.g. {{player_{winner_id}}}) — never write
+their actual name.
+
+Respond ONLY with valid JSON:
+{{"verdict": "<2-3 sentences>"}}"""
+
+    response = client.chat.completions.create(
+        model="openai/gpt-oss-120b",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.4,
+        response_format={"type": "json_schema", "json_schema": COMPARISON_RESPONSE_SCHEMA},
+    )
+
+    raw = response.choices[0].message.content.strip()
+    if raw.startswith("```"):
+        raw = raw.replace("```json", "", 1).replace("```", "").strip()
+
+    try:
+        result = json.loads(raw)
+        verdict = result.get("verdict", "")
+    except json.JSONDecodeError:
+        return ""
+
+    id_to_name = {entry_a["id"]: entry_a["name"], entry_b["id"]: entry_b["name"]}
+    verdict = _substitute_player_placeholders(verdict, id_to_name)
+    verdict = sanitize_markdown(verdict)
+
+    redis_client.set(cache_key, verdict)
+    return verdict
+
+
+def _relative_score(value_a, value_b, lower_is_better=False):
+    """0-100 score for each player, relative to each other (not an absolute scale)."""
+    if value_a is None or value_b is None:
+        return None, None
+    if lower_is_better:
+        value_a, value_b = -value_a, -value_b
+    max_val = max(value_a, value_b, 0.01)
+    return round(max(value_a, 0) / max_val * 100, 1), round(max(value_b, 0) / max_val * 100, 1)
+
+
+def compare_players(player_a_id: int, player_b_id: int, lang: str = "en") -> dict:
+    from apps.predictions.services import _build_recent_stats, _candidate_score, _get_fixture_difficulties_by_team
+    from apps.fpl_data.models import Gameweek
+
+    if player_a_id == player_b_id:
+        raise ValueError("Choose two different players.")
+
+    player_a = Player.objects.select_related("team").filter(id=player_a_id).first()
+    player_b = Player.objects.select_related("team").filter(id=player_b_id).first()
+
+    if not player_a or not player_b:
+        raise ValueError("One or both players not found.")
+
+    if player_a.position != player_b.position:
+        raise ValueError("Players must be in the same position.")
+
+    gameweek = Gameweek.objects.filter(is_current=True).first() or Gameweek.objects.filter(is_next=True).first()
+    if not gameweek:
+        raise ValueError("No active gameweek found.")
+
+    fdr_map = _get_fixture_difficulties_by_team([player_a.team, player_b.team], n=5)
+
+    def _raw(player):
+        recent = _build_recent_stats(player, gameweek, n=5)
+        fdr = fdr_map.get(player.team_id)
+        score = _candidate_score(player, recent, fdr)
+        raw = {
+            "form": float(player.form),
+            "xgi_season": float(player.expected_goal_involvements),
+            "xgi_recent": recent["xGI"],
+            "fixtures_fdr": fdr,
+            "minutes_per_game": recent["minutes_per_game"],
+        }
+        if player.position in ("GKP", "DEF"):
+            raw["xgc_season"] = float(player.expected_goals_conceded)
+        return player, raw, score
+
+    player_a, raw_a, score_a = _raw(player_a)
+    player_b, raw_b, score_b = _raw(player_b)
+
+    directions = {
+        "form": False, "xgi_season": False, "xgi_recent": False,
+        "fixtures_fdr": True, "minutes_per_game": False, "xgc_season": True,
+    }
+
+    def _build_breakdown(raw):
+        breakdown = {}
+        for key, value in raw.items():
+            s_a, s_b = _relative_score(raw_a.get(key), raw_b.get(key), lower_is_better=directions[key])
+            breakdown[key] = {"value": round(value, 2) if value is not None else None}
+        return breakdown
+
+    breakdown_a = _build_breakdown(raw_a)
+    breakdown_b = _build_breakdown(raw_b)
+    for key in raw_a:
+        s_a, s_b = _relative_score(raw_a.get(key), raw_b.get(key), lower_is_better=directions[key])
+        breakdown_a[key]["score"] = s_a
+        breakdown_b[key]["score"] = s_b
+
+    def _entry(player, breakdown, score):
+        return {
+            "id": player.id,
+            "name": player.web_name,
+            "team": player.team.short_name,
+            "position": player.position,
+            "price": round(float(player.price), 1),
+            "status": player.status,
+            "score": score,
+            "breakdown": breakdown,
+        }
+
+    entry_a = _entry(player_a, breakdown_a, score_a)
+    entry_b = _entry(player_b, breakdown_b, score_b)
+
+    winner_id = player_a.id if score_a >= score_b else player_b.id
+
+    try:
+        verdict = generate_comparison_verdict(entry_a, entry_b, winner_id, gameweek, lang)
+    except Exception:
+        verdict = ""
+
+    return {
+        "gameweek": gameweek.name,
+        "winner_id": winner_id,
+        "players": {str(entry_a["id"]): entry_a, str(entry_b["id"]): entry_b},
+        "verdict": verdict,
+    }

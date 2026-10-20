@@ -3,6 +3,8 @@ import re
 import math
 import json
 import redis
+import bisect, json, logging, statistics
+from django.db.models import Q, Sum
 from groq import Groq
 from django.conf import settings
 from decimal import Decimal
@@ -37,7 +39,7 @@ PERFORMANCE_BLURB_SCHEMA = {
 
 client = Groq(api_key=settings.GROQ_API_KEY)
 
-
+logger = logging.getLogger(__name__)
 
 def sanitize_markdown(text: str) -> str:
     """Strip characters that break Telegram's legacy Markdown parser."""
@@ -487,155 +489,443 @@ def _substitute_player_placeholders(text: str, id_to_name: dict) -> str:
     return re.sub(r'\{player_(\d+)\}', _replace, text)
 
 
-def generate_comparison_verdict(entry_a: dict, entry_b: dict, winner_id: int, gameweek, lang: str = "en") -> str:
+# ---------------------------------------------------------------------------
+# Tunable constants
+# ---------------------------------------------------------------------------
+RECENT_WINDOW = 5            # finalized gameweeks counted as "recent"
+PRIOR_MINUTES = 180          # pseudo-minutes used to shrink small-sample per-90 rates
+MIN_POP_MINUTES = 180        # season minutes needed to be part of the comparison pool
+FULL_MINUTES_PER_GW = 80     # >= this many recent minutes/GW => no playing-time penalty
+CLOSE_CALL_MARGIN = 3.0      # score gap (0-100 scale) below which we say "too close"
+POPULATION_TTL = 30 * 60     # seconds
+VERDICT_TTL = 3 * 60 * 60    # seconds
+ 
+# Weights per position (each row sums to 1.0). Playing time and availability are
+# applied as multipliers on top, not as weighted axes.
+POSITION_WEIGHTS = {
+    "GKP": {"form": 0.17, "xgc_season": 0.22, "cs_season": 0.13, "bps_recent": 0.18, "fixtures_fdr": 0.30},
+    "DEF": {"form": 0.17, "xgi_recent": 0.14, "xgi_season": 0.12, "xgc_season": 0.16,
+            "dc_recent": 0.16, "fixtures_fdr": 0.25},
+    "MID": {"form": 0.19, "xgi_recent": 0.28, "xgi_season": 0.22, "dc_recent": 0.06, "fixtures_fdr": 0.25},
+    "FWD": {"form": 0.19, "xgi_recent": 0.32, "xgi_season": 0.24, "fixtures_fdr": 0.25},
+}
+for _pos, _w in POSITION_WEIGHTS.items():
+    assert abs(sum(_w.values()) - 1.0) < 1e-9, f"weights for {_pos} must sum to 1"
+ 
+# Which side of the fixture matters for each position:
+# "attack"  -> opponent's defensive weakness + own attacking strength
+# "defence" -> opponent's attacking weakness + own defensive strength
+FIXTURE_MODE_BLEND = {
+    "GKP": {"defence": 1.0},
+    "DEF": {"defence": 0.6, "attack": 0.4},
+    "MID": {"attack": 1.0},
+    "FWD": {"attack": 1.0},
+}
+ 
+# Per-90 metrics aggregated from PlayerGameweekStat.
+METRICS = {
+    "xgi_recent": {"label": "Recent xGI", "num": "recent_xgi", "den": "recent_minutes", "lower": False},
+    "xgi_season": {"label": "Season xGI", "num": "season_xgi", "den": "season_minutes", "lower": False},
+    "xgc_season": {"label": "Def. Solidity", "num": "season_xgc", "den": "season_minutes", "lower": True},
+    "cs_season": {"label": "Clean Sheets", "num": "season_cs", "den": "season_minutes", "lower": False},
+    "bps_recent": {"label": "Shot-stopping (BPS)", "num": "recent_bps", "den": "recent_minutes", "lower": False},
+    "dc_recent": {"label": "Defensive Actions", "num": "recent_dc", "den": "recent_minutes", "lower": False},
+}
+EXTRA_LABELS = {"form": "Form", "fixtures_fdr": "Fixtures", "minutes_per_game": "Minutes"}
+ 
+ 
+# ---------------------------------------------------------------------------
+# Small pure helpers
+# ---------------------------------------------------------------------------
+def _percentile(value, sorted_values, lower_is_better=False):
+    """Mid-rank percentile (0-100) of `value` inside an ascending-sorted list."""
+    n = len(sorted_values)
+    if n == 0:
+        return 50.0
+    below = bisect.bisect_left(sorted_values, value)
+    equal = bisect.bisect_right(sorted_values, value) - below
+    pct = (below + 0.5 * equal) / n * 100
+    return round(100 - pct if lower_is_better else pct, 1)
+ 
+ 
+def _shrunk_rate(total, minutes, pop_rate, prior_minutes=PRIOR_MINUTES):
+    """Per-90 rate pulled toward the pool's median when the sample is small."""
+    return (total + pop_rate * prior_minutes / 90) / (minutes + prior_minutes) * 90
+ 
+ 
+def _norm(value, lo, hi):
+    return 0.5 if hi == lo else (value - lo) / (hi - lo)
+ 
+ 
+# ---------------------------------------------------------------------------
+# Data access
+# ---------------------------------------------------------------------------
+def _target_gameweek():
+    """The gameweek the user is picking for = the NEXT one (fallback: current)."""
+    return (
+        Gameweek.objects.filter(is_next=True).first()
+        or Gameweek.objects.filter(is_current=True).first()
+    )
+ 
+ 
+def _recent_window_ids(gameweek, n=RECENT_WINDOW):
+    """fpl_ids of the latest n finalized gameweeks (that actually have stats) before `gameweek`."""
+    return list(
+        PlayerGameweekStat.objects.filter(is_final=True, gameweek__fpl_id__lt=gameweek.fpl_id)
+        .values_list("gameweek__fpl_id", flat=True)
+        .distinct()
+        .order_by("-gameweek__fpl_id")[:n]
+    )
+ 
+ 
+def _aggregate_stats(position, gameweek, window_ids, player_ids=None):
+    """Season + recent-window totals per player, in ONE query."""
+    recent = Q(gameweek__fpl_id__in=window_ids)
+    qs = PlayerGameweekStat.objects.filter(
+        is_final=True,
+        gameweek__fpl_id__lt=gameweek.fpl_id,
+        player__position=position,
+    )
+    if player_ids is not None:
+        qs = qs.filter(player_id__in=player_ids)
+ 
+    rows = qs.values("player_id").annotate(
+        season_minutes=Sum("minutes"),
+        recent_minutes=Sum("minutes", filter=recent),
+        season_xgi=Sum("expected_goal_involvements"),
+        recent_xgi=Sum("expected_goal_involvements", filter=recent),
+        season_xgc=Sum("expected_goals_conceded"),
+        season_cs=Sum("clean_sheets"),
+        recent_bps=Sum("bps", filter=recent),
+        recent_dc=Sum("defensive_contribution", filter=recent),
+    )
+    return {
+        row["player_id"]: {k: float(v or 0) for k, v in row.items() if k != "player_id"}
+        for row in rows
+    }
+ 
+ 
+_EMPTY_AGG = {
+    "season_minutes": 0.0, "recent_minutes": 0.0, "season_xgi": 0.0, "recent_xgi": 0.0,
+    "season_xgc": 0.0, "season_cs": 0.0, "recent_bps": 0.0, "recent_dc": 0.0,
+}
+ 
+ 
+# ---------------------------------------------------------------------------
+# Same-position population (what percentiles are measured against)
+# ---------------------------------------------------------------------------
+def _build_population(position, gameweek, window_ids):
+    agg = _aggregate_stats(position, gameweek, window_ids)
+    pool = {pid: a for pid, a in agg.items() if a["season_minutes"] >= MIN_POP_MINUTES}
+    if len(pool) < 8:  # very early season: fall back to anyone who has played
+        pool = {pid: a for pid, a in agg.items() if a["season_minutes"] > 0}
+    if not pool:
+        raise ValueError("Not enough finished-gameweek data to compare players yet.")
+ 
+    forms = dict(Player.objects.filter(id__in=list(pool)).values_list("id", "form"))
+    metrics, medians = {}, {}
+ 
+    for key in POSITION_WEIGHTS[position]:
+        spec = METRICS.get(key)
+        if not spec:
+            continue
+        raw = [a[spec["num"]] / a[spec["den"]] * 90 for a in pool.values() if a[spec["den"]] > 0]
+        median = statistics.median(raw) if raw else 0.0
+        medians[key] = median
+        metrics[key] = sorted(_shrunk_rate(a[spec["num"]], a[spec["den"]], median) for a in pool.values())
+ 
+    metrics["form"] = sorted(float(forms.get(pid, 0)) for pid in pool)
+    return {"metrics": metrics, "medians": medians, "pool_size": len(pool)}
+ 
+ 
+def _get_population(position, gameweek, window_ids):
+    key = f"compare:pop:v2:{position}:{gameweek.fpl_id}:{window_ids[0]}"
+    try:
+        cached = redis_client.get(key)
+        if cached:
+            return json.loads(cached)
+    except Exception:
+        logger.warning("Population cache read failed", exc_info=True)
+ 
+    population = _build_population(position, gameweek, window_ids)
+ 
+    try:
+        redis_client.set(key, json.dumps(population), ex=POPULATION_TTL)
+    except Exception:
+        logger.warning("Population cache write failed", exc_info=True)
+    return population
+ 
+ 
+# ---------------------------------------------------------------------------
+# Fixtures for the target gameweek only
+# ---------------------------------------------------------------------------
+def _side_ease(own, opp, is_home, fdr, mode, ranges):
+    """0-1: how favourable one fixture is for `own`, from the player's point of view."""
+    if mode == "attack":
+        opp_v = opp.strength_defence_away if is_home else opp.strength_defence_home
+        own_v = own.strength_attack_home if is_home else own.strength_attack_away
+        opp_rng, own_rng = ranges["def"], ranges["att"]
+    else:
+        opp_v = opp.strength_attack_away if is_home else opp.strength_attack_home
+        own_v = own.strength_defence_home if is_home else own.strength_defence_away
+        opp_rng, own_rng = ranges["att"], ranges["def"]
+ 
+    if opp_v is None or own_v is None:  # strengths not synced -> fall back to official FDR
+        return (5 - fdr) / 4 if fdr else 0.5
+    return 0.7 * (1 - _norm(opp_v, *opp_rng)) + 0.3 * _norm(own_v, *own_rng)
+ 
+ 
+def _fixture_context(gameweek, position):
+    """Per team: summed fixture ease for the gameweek (DGW > 1 fixture > blank), plus fixture info."""
+    fixtures = list(
+        Fixture.objects.filter(gameweek=gameweek).select_related("team_home", "team_away")
+    )
+    if not fixtures:
+        raise ValueError(f"Fixtures for {gameweek.name} are not synced yet.")
+ 
+    teams = list(Team.objects.all())
+ 
+    def _range(fields):
+        vals = [getattr(t, f) for t in teams for f in fields if getattr(t, f) is not None]
+        return (min(vals), max(vals)) if vals else (0, 0)
+ 
+    ranges = {
+        "att": _range(("strength_attack_home", "strength_attack_away")),
+        "def": _range(("strength_defence_home", "strength_defence_away")),
+    }
+ 
+    blend = FIXTURE_MODE_BLEND[position]
+    values = {t.id: 0.0 for t in teams}
+    info = {t.id: [] for t in teams}
+ 
+    for f in fixtures:
+        sides = (
+            (f.team_home, f.team_away, True, f.difficulty_home),
+            (f.team_away, f.team_home, False, f.difficulty_away),
+        )
+        for own, opp, is_home, fdr in sides:
+            ease = sum(w * _side_ease(own, opp, is_home, fdr, mode, ranges) for mode, w in blend.items())
+            values[own.id] += ease
+            info[own.id].append({"opponent": opp.short_name, "home": is_home, "fdr": fdr})
+ 
+    return {"sorted_values": sorted(values.values()), "values": values, "info": info}
+ 
+ 
+# ---------------------------------------------------------------------------
+# Availability & playing time (multipliers, not weighted axes)
+# ---------------------------------------------------------------------------
+def _availability(player):
+    chance = player.chance_of_playing_next_round
+    if chance is not None:
+        mult = chance / 100
+    elif player.status == "a":
+        mult = 1.0
+    elif player.status == "d":
+        mult = 0.5  # doubtful with no stated chance (assumption)
+    else:
+        mult = 0.0  # injured / suspended / unavailable / not in squad
+    return {
+        "status": player.status,
+        "chance_of_playing": chance,
+        "news": player.news,
+        "multiplier": round(mult, 2),
+    }
+ 
+ 
+# ---------------------------------------------------------------------------
+# Scoring one player
+# ---------------------------------------------------------------------------
+def _score_player(player, agg, window_ids, population, fixture_ctx):
+    position = player.position
+    stats = agg.get(player.id, _EMPTY_AGG)
+    fixture_list = fixture_ctx["info"].get(player.team_id, [])
+    fdrs = [f["fdr"] for f in fixture_list if f["fdr"] is not None]
+    avg_fdr = round(sum(fdrs) / len(fdrs), 2) if fdrs else None
+    fixture_pct = _percentile(fixture_ctx["values"].get(player.team_id, 0.0), fixture_ctx["sorted_values"])
+ 
+    breakdown = {}
+    base = 0.0
+    for key, weight in POSITION_WEIGHTS[position].items():
+        if key == "form":
+            value = float(player.form)
+            pct = _percentile(value, population["metrics"]["form"])
+        elif key == "fixtures_fdr":
+            value, pct = avg_fdr, fixture_pct
+        else:
+            spec = METRICS[key]
+            value = _shrunk_rate(stats[spec["num"]], stats[spec["den"]], population["medians"][key])
+            pct = _percentile(value, population["metrics"][key], spec["lower"])
+        label = METRICS[key]["label"] if key in METRICS else EXTRA_LABELS[key]
+        breakdown[key] = {
+            "label": label,
+            "value": round(value, 2) if value is not None else None,
+            "score": pct,
+            "weight": weight,
+        }
+        base += pct * weight
+ 
+    minutes_per_gw = stats["recent_minutes"] / len(window_ids)
+    playing_factor = min(minutes_per_gw / FULL_MINUTES_PER_GW, 1.0)
+    breakdown["minutes_per_game"] = {
+        "label": EXTRA_LABELS["minutes_per_game"],
+        "value": round(minutes_per_gw, 1),
+        "score": round(playing_factor * 100, 1),
+        "weight": 0,  # multiplier, see below
+    }
+ 
+    availability = _availability(player)
+    final = base * playing_factor * availability["multiplier"]
+    price = float(player.price)
+ 
+    return {
+        "id": player.id,
+        "name": player.web_name,
+        "team": player.team.short_name,
+        "position": position,
+        "price": round(price, 1),
+        "status": player.status,
+        "score": round(final, 2),
+        "base_score": round(base, 2),
+        "score_per_million": round(final / price, 2) if price > 0 else None,
+        "low_sample": stats["season_minutes"] < MIN_POP_MINUTES,
+        "availability": availability,
+        "fixtures": fixture_list,
+        "breakdown": breakdown,
+    }
+ 
+ 
+# ---------------------------------------------------------------------------
+# Public entry point
+# ---------------------------------------------------------------------------
+def compare_players(player_a_id: int, player_b_id: int, lang: str = "en") -> dict:
+    if player_a_id == player_b_id:
+        raise ValueError("Choose two different players.")
+ 
+    players = {
+        p.id: p for p in Player.objects.select_related("team").filter(id__in=[player_a_id, player_b_id])
+    }
+    player_a, player_b = players.get(player_a_id), players.get(player_b_id)
+    if not player_a or not player_b:
+        raise ValueError("One or both players not found.")
+    if player_a.position != player_b.position:
+        raise ValueError("Players must be in the same position.")
+ 
+    gameweek = _target_gameweek()
+    if not gameweek:
+        raise ValueError("No active gameweek found.")
+ 
+    window_ids = _recent_window_ids(gameweek)
+    if not window_ids:
+        raise ValueError("Not enough finished-gameweek data to compare players yet.")
+ 
+    position = player_a.position
+    population = _get_population(position, gameweek, window_ids)
+    agg = _aggregate_stats(position, gameweek, window_ids, player_ids=[player_a.id, player_b.id])
+    fixture_ctx = _fixture_context(gameweek, position)
+ 
+    entry_a = _score_player(player_a, agg, window_ids, population, fixture_ctx)
+    entry_b = _score_player(player_b, agg, window_ids, population, fixture_ctx)
+ 
+    winner_id = player_a.id if entry_a["score"] >= entry_b["score"] else player_b.id
+    margin = round(abs(entry_a["score"] - entry_b["score"]), 2)
+    close_call = margin < CLOSE_CALL_MARGIN
+ 
+    try:
+        verdict = generate_comparison_verdict(entry_a, entry_b, winner_id, gameweek, lang, close_call)
+    except Exception:
+        logger.exception("Comparison verdict generation failed")
+        verdict = ""
+ 
+    return {
+        "gameweek": gameweek.name,
+        "winner_id": winner_id,
+        "margin": margin,
+        "close_call": close_call,
+        "players": {str(entry_a["id"]): entry_a, str(entry_b["id"]): entry_b},
+        "verdict": verdict,
+    }
+ 
+ 
+# ---------------------------------------------------------------------------
+# LLM verdict (replacement for the old generate_comparison_verdict)
+# ---------------------------------------------------------------------------
+def _verdict_summary(entry):
+    return {
+        "id": entry["id"],
+        "team": entry["team"],
+        "position": entry["position"],
+        "overall_score": entry["score"],
+        "availability": entry["availability"],
+        "fixtures_next_gameweek": entry["fixtures"],
+        "metrics": {
+            v["label"]: {"value": v["value"], "percentile_vs_same_position": v["score"]}
+            for v in entry["breakdown"].values()
+        },
+    }
+ 
+ 
+def generate_comparison_verdict(entry_a: dict, entry_b: dict, winner_id: int, gameweek,
+                                lang: str = "en", close_call: bool = False) -> str:
     low_id, high_id = sorted([entry_a["id"], entry_b["id"]])
-    cache_key = f"compare:verdict:{low_id}:{high_id}:{gameweek.id}:{lang}"
+    cache_key = f"compare:verdict:v2:{low_id}:{high_id}:{gameweek.id}:{lang}"
     cached = redis_client.get(cache_key)
     if cached:
         return cached.decode("utf-8")
-
+ 
     language_word = "Persian" if lang == "fa" else "English"
-
     summary = {
-        "player_a": {"id": entry_a["id"], "position": entry_a["position"],
-                     **{k: v["value"] for k, v in entry_a["breakdown"].items()}, "score": entry_a["score"]},
-        "player_b": {"id": entry_b["id"], "position": entry_b["position"],
-                     **{k: v["value"] for k, v in entry_b["breakdown"].items()}, "score": entry_b["score"]},
+        "player_a": _verdict_summary(entry_a),
+        "player_b": _verdict_summary(entry_b),
         "winner_id": winner_id,
+        "close_call": close_call,
     }
-
-    prompt = f"""Compare these two FPL players for {gameweek.name}, both in the same position:
-
+ 
+    closeness = (
+        "The scores are very close, so say it is a narrow call and mention what could swing it."
+        if close_call else
+        "Explain clearly why the winner is the better pick."
+    )
+ 
+    prompt = f"""Compare these two FPL players for {gameweek.name}, both in the same position.
+This is only about the upcoming gameweek, not the long term.
+ 
 {json.dumps(summary, indent=2)}
-
-Player with id {winner_id} scores higher overall. Write a short verdict (2-3 sentences) in
-{language_word} explaining why, citing 1-2 of the most compelling stats in natural language.
-
-Whenever you refer to a player, use {{player_<id>}} (e.g. {{player_{winner_id}}}) — never write
+ 
+Player with id {winner_id} scores higher overall. {closeness}
+Write a short verdict (2-3 sentences) in {language_word}, citing 1-2 of the most compelling
+reasons in natural language. Percentiles are for your reasoning only; describe them in words
+(e.g. "among the best defenders"), never as numbers. If a player's availability is doubtful
+or a team has no fixture / a double gameweek, say so.
+ 
+Whenever you refer to a player, use {{player_<id>}} (e.g. {{player_{winner_id}}}) - never write
 their actual name.
-
+ 
 Respond ONLY with valid JSON:
 {{"verdict": "<2-3 sentences>"}}"""
-
+ 
     response = client.chat.completions.create(
         model="openai/gpt-oss-120b",
         messages=[{"role": "user", "content": prompt}],
         temperature=0.4,
         response_format={"type": "json_schema", "json_schema": COMPARISON_RESPONSE_SCHEMA},
     )
-
+ 
     raw = response.choices[0].message.content.strip()
     if raw.startswith("```"):
         raw = raw.replace("```json", "", 1).replace("```", "").strip()
-
+ 
     try:
-        result = json.loads(raw)
-        verdict = result.get("verdict", "")
+        verdict = json.loads(raw).get("verdict", "")
     except json.JSONDecodeError:
+        logger.warning("Verdict JSON could not be parsed: %r", raw[:200])
         return ""
-
+ 
     id_to_name = {entry_a["id"]: entry_a["name"], entry_b["id"]: entry_b["name"]}
-    verdict = _substitute_player_placeholders(verdict, id_to_name)
-    verdict = sanitize_markdown(verdict)
-
-    redis_client.set(cache_key, verdict)
+    verdict = sanitize_markdown(_substitute_player_placeholders(verdict, id_to_name))
+ 
+    redis_client.set(cache_key, verdict, ex=VERDICT_TTL)
     return verdict
+ 
 
 
-def _relative_score(value_a, value_b, lower_is_better=False):
-    """0-100 score for each player, relative to each other (not an absolute scale)."""
-    if value_a is None or value_b is None:
-        return None, None
-    if lower_is_better:
-        value_a, value_b = -value_a, -value_b
-    max_val = max(value_a, value_b, 0.01)
-    return round(max(value_a, 0) / max_val * 100, 1), round(max(value_b, 0) / max_val * 100, 1)
 
-
-def compare_players(player_a_id: int, player_b_id: int, lang: str = "en") -> dict:
-    from apps.predictions.services import _build_recent_stats, _candidate_score, _get_fixture_difficulties_by_team
-    from apps.fpl_data.models import Gameweek
-
-    if player_a_id == player_b_id:
-        raise ValueError("Choose two different players.")
-
-    player_a = Player.objects.select_related("team").filter(id=player_a_id).first()
-    player_b = Player.objects.select_related("team").filter(id=player_b_id).first()
-
-    if not player_a or not player_b:
-        raise ValueError("One or both players not found.")
-
-    if player_a.position != player_b.position:
-        raise ValueError("Players must be in the same position.")
-
-    gameweek = Gameweek.objects.filter(is_current=True).first() or Gameweek.objects.filter(is_next=True).first()
-    if not gameweek:
-        raise ValueError("No active gameweek found.")
-
-    fdr_map = _get_fixture_difficulties_by_team([player_a.team, player_b.team], n=5)
-
-    def _raw(player):
-        recent = _build_recent_stats(player, gameweek, n=5)
-        fdr = fdr_map.get(player.team_id)
-        score = _candidate_score(player, recent, fdr)
-        raw = {
-            "form": float(player.form),
-            "xgi_season": float(player.expected_goal_involvements),
-            "xgi_recent": recent["xGI"],
-            "fixtures_fdr": fdr,
-            "minutes_per_game": recent["minutes_per_game"],
-        }
-        if player.position in ("GKP", "DEF"):
-            raw["xgc_season"] = float(player.expected_goals_conceded)
-        return player, raw, score
-
-    player_a, raw_a, score_a = _raw(player_a)
-    player_b, raw_b, score_b = _raw(player_b)
-
-    directions = {
-        "form": False, "xgi_season": False, "xgi_recent": False,
-        "fixtures_fdr": True, "minutes_per_game": False, "xgc_season": True,
-    }
-
-    def _build_breakdown(raw):
-        breakdown = {}
-        for key, value in raw.items():
-            s_a, s_b = _relative_score(raw_a.get(key), raw_b.get(key), lower_is_better=directions[key])
-            breakdown[key] = {"value": round(value, 2) if value is not None else None}
-        return breakdown
-
-    breakdown_a = _build_breakdown(raw_a)
-    breakdown_b = _build_breakdown(raw_b)
-    for key in raw_a:
-        s_a, s_b = _relative_score(raw_a.get(key), raw_b.get(key), lower_is_better=directions[key])
-        breakdown_a[key]["score"] = s_a
-        breakdown_b[key]["score"] = s_b
-
-    def _entry(player, breakdown, score):
-        return {
-            "id": player.id,
-            "name": player.web_name,
-            "team": player.team.short_name,
-            "position": player.position,
-            "price": round(float(player.price), 1),
-            "status": player.status,
-            "score": score,
-            "breakdown": breakdown,
-        }
-
-    entry_a = _entry(player_a, breakdown_a, score_a)
-    entry_b = _entry(player_b, breakdown_b, score_b)
-
-    winner_id = player_a.id if score_a >= score_b else player_b.id
-
-    try:
-        verdict = generate_comparison_verdict(entry_a, entry_b, winner_id, gameweek, lang)
-    except Exception:
-        verdict = ""
-
-    return {
-        "gameweek": gameweek.name,
-        "winner_id": winner_id,
-        "players": {str(entry_a["id"]): entry_a, str(entry_b["id"]): entry_b},
-        "verdict": verdict,
-    }

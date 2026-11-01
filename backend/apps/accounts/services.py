@@ -18,7 +18,7 @@ def get_current_squad(fpl_team_id: int, gameweek_fpl_id: int):
 
 
 def get_manager_gameweek_state(fpl_team_id: int, gameweek_fpl_id: int):
-    response = requests.get(f"{FPL_BASE_URL}/entry/{fpl_team_id}/event/{gameweek_fpl_id}/picks/")
+    response = requests.get(f"{FPL_BASE_URL}/entry/{fpl_team_id}/event/{gameweek_fpl_id}/picks/", timeout=10)
     response.raise_for_status()
     data = response.json()
 

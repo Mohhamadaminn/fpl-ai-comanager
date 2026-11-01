@@ -1,20 +1,44 @@
 import { useState } from "react";
 import PlayerSearchSelect from "../components/PlayerSearchSelect";
 import ComparisonRadar from "../components/ComparisonRadar";
+import SquadCheck from "../components/SquadCheck";
+import PlayerPhoto from "../components/PlayerPhoto";
 import { comparePlayers } from "../api/compare";
 
-const METRIC_LABELS = {
-  form: "Form",
-  xgi_season: "Season xGI",
-  xgi_recent: "Recent xGI",
-  fixtures_fdr: "Fixtures",
-  minutes_per_game: "Minutes",
-  xgc_season: "Defensive Solidity",
-};
+const HORIZONS = [1, 2, 3, 4, 5];
+
+// Shown on the radar only; the stat table below skips it.
+const TABLE_HIDDEN_KEYS = ["minutes_per_game"];
+
+function horizonLabel(n) {
+  return n === 1 ? "Next gameweek" : `Next ${n} gameweeks`;
+}
+
+function fixturesLine(fixtures) {
+  if (!fixtures || fixtures.length === 0) return "No fixture";
+  return fixtures
+    .map((f) => `${f.opponent} (${f.home ? "H" : "A"})`)
+    .join(" · ");
+}
+
+// Plain-English notes from the API: availability, long absences, just back from injury.
+function PlayerNotes({ notes }) {
+  if (!notes || notes.length === 0) return null;
+  return (
+    <ul className="compare-card-notes">
+      {notes.map((n) => (
+        <li key={n.type} className={`compare-card-note compare-card-note--${n.level}`}>
+          {n.text}
+        </li>
+      ))}
+    </ul>
+  );
+}
 
 function ComparePlayers() {
   const [playerA, setPlayerA] = useState(null);
   const [playerB, setPlayerB] = useState(null);
+  const [horizon, setHorizon] = useState(1);
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -25,7 +49,7 @@ function ComparePlayers() {
     setLoading(true);
     setError(null);
     try {
-      const data = await comparePlayers(playerA.id, playerB.id);
+      const data = await comparePlayers(playerA.id, playerB.id, horizon);
       setResult(data);
     } catch (e) {
       setError(e.response?.data?.error || "Something went wrong.");
@@ -63,6 +87,24 @@ function ComparePlayers() {
         />
       </div>
 
+      <div className="compare-horizon" role="group" aria-label="Gameweeks to look ahead">
+        <span className="compare-horizon-label">Look ahead</span>
+        <div className="compare-horizon-options">
+          {HORIZONS.map((n) => (
+            <button
+              key={n}
+              type="button"
+              className={`compare-horizon-option ${n === horizon ? "active" : ""}`}
+              aria-pressed={n === horizon}
+              onClick={() => { setHorizon(n); setResult(null); setError(null); }}
+            >
+              {n}
+            </button>
+          ))}
+        </div>
+        <span className="compare-horizon-hint">{horizonLabel(horizon)}</span>
+      </div>
+
       <div className="compare-action">
         <button
           className="compare-button"
@@ -84,7 +126,7 @@ function ComparePlayers() {
       {!result && !loading && !error && (playerA || playerB) && (
         <p className="compare-empty-hint">
           {playerA && playerB
-            ? "Ready — hit Compare Players to see the verdict."
+            ? "Ready - hit Compare Players to see the verdict."
             : "Pick a second player to compare."}
         </p>
       )}
@@ -100,43 +142,103 @@ function ComparePlayers() {
         <div className="compare-results reveal">
           <span className="compare-gw">{result.gameweek}</span>
 
+          {result.caution && <p className="compare-caution">{result.caution}</p>}
+
           <div className="compare-cards">
-            {[entryA, entryB].map((entry) => (
-              <div
-                key={entry.id}
-                className={`compare-card ${entry.id === result.winner_id ? "winner" : ""}`}
-              >
-                {entry.id === result.winner_id && (
-                  <span className="winner-badge">Better Pick</span>
-                )}
-                <h3>{entry.name}</h3>
-                <p className="compare-card-meta">
-                  {entry.team} · {entry.position} · £{entry.price}m
-                </p>
-                <div className="compare-score">
-                  <span className="compare-score-value">{entry.score}</span>
-                  <span className="compare-score-label">score</span>
+            {[entryA, entryB].map((entry) => {
+              // A player who is ruled out is never shown as the better pick.
+              const isWinner = entry.id === result.winner_id && entry.recommended !== false;
+              return (
+                <div
+                  key={entry.id}
+                  className={`compare-card ${isWinner ? "winner" : ""}`}
+                >
+                  {isWinner && (
+                    <span className="winner-badge">
+                      {result.close_call ? "Slight Edge" : "Better Pick"}
+                    </span>
+                  )}
+                  <PlayerPhoto
+                    className="compare-card-photo"
+                    name={entry.name}
+                    photoUrl={entry.photo_url}
+                  />
+                  <h3>{entry.name}</h3>
+                  <p className="compare-card-meta">
+                    {entry.team} · {entry.position} · £{entry.price}m
+                  </p>
+                  {entry.recommended === false && (
+                    <span className="player-status-badge player-status-badge--out">
+                      Not recommended
+                    </span>
+                  )}
+                  <div className="compare-score">
+                    <span className="compare-score-value">{entry.score}</span>
+                    <span className="compare-score-label">score</span>
+                  </div>
+                  <p className="compare-card-fixtures">{fixturesLine(entry.fixtures)}</p>
+                  <PlayerNotes notes={entry.notes} />
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
+
+          {result.close_call && (
+            <p className="compare-close-note">
+              Too close to call: the scores are only {result.margin} points apart.
+            </p>
+          )}
+
+          <p className="compare-score-note">
+            Scores reflect performance only: form (recent games, big scores and the season),
+            underlying stats, team strength, upcoming fixtures (home or away) and playing time.
+            Price is not included. Injuries and suspensions are shown as notes: a player who is
+            ruled out is never recommended.
+          </p>
 
           <div className="compare-chart-wrap">
             <ComparisonRadar playerA={entryA} playerB={entryB} />
           </div>
 
           <div className="compare-stat-table">
-            {Object.keys(entryA.breakdown).map((key) => (
-              <div className="compare-stat-row" key={key}>
-                <span className="compare-stat-value left">
-                  {entryA.breakdown[key].value ?? "—"}
-                </span>
-                <span className="compare-stat-label">{METRIC_LABELS[key] || key}</span>
-                <span className="compare-stat-value right">
-                  {entryB.breakdown[key].value ?? "—"}
-                </span>
-              </div>
-            ))}
+            {/* Column heads: same names, colours and order as the radar legend (A = green, B = blue). */}
+            <div className="compare-stat-row compare-stat-head">
+              <span className="compare-stat-value left compare-side-a">
+                <i className="compare-dot compare-dot--a" />
+                {entryA.name}
+              </span>
+              <span className="compare-stat-label" />
+              <span className="compare-stat-value right compare-side-b">
+                {entryB.name}
+                <i className="compare-dot compare-dot--b" />
+              </span>
+            </div>
+            {Object.keys(entryA.breakdown)
+              .filter((key) => !TABLE_HIDDEN_KEYS.includes(key))
+              .map((key) => {
+                const a = entryA.breakdown[key];
+                const b = entryB.breakdown[key];
+                // The better side is decided by the score (what the radar draws), not by the raw
+                // number, because for fixtures (FDR) and goals conceded a lower number is better.
+                const diff = (a.score ?? 0) - (b.score ?? 0);
+                const better = Math.abs(diff) < 0.5 ? null : diff > 0 ? "a" : "b";
+                return (
+                  <div className="compare-stat-row" key={key}>
+                    <span className={`compare-stat-value left ${better === "a" ? "compare-better-a" : ""}`}>
+                      {a.display ?? a.value ?? "-"}
+                    </span>
+                    <span className="compare-stat-label">
+                      {a.label || key}
+                    </span>
+                    <span className={`compare-stat-value right ${better === "b" ? "compare-better-b" : ""}`}>
+                      {b.display ?? b.value ?? "-"}
+                    </span>
+                  </div>
+                );
+              })}
+            <p className="compare-stat-hint">
+              The highlighted number is the better one. For fixtures (FDR) and goals conceded, lower is better.
+            </p>
           </div>
 
           {result.verdict && (
@@ -147,6 +249,8 @@ function ComparePlayers() {
           )}
         </div>
       )}
+
+      <SquadCheck />
     </div>
   );
 }

@@ -2,8 +2,9 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from .models import Player, Team
-from .serializers import PlayerListSerializer, TeamListSerializer, ComparePlayersRequestSerializer
-from .services import compare_players
+from .serializers import PlayerListSerializer, TeamListSerializer, ComparePlayersRequestSerializer, SquadInsightsRequestSerializer
+from .squad_insights import get_squad_insights
+from .compare_engine import compare_players
 
 
 SORT_FIELDS = {
@@ -25,7 +26,7 @@ class PlayerListView(APIView):
         page = max(int(request.query_params.get("page", 1)), 1)
         page_size = 25
 
-        qs = Player.objects.filter(status="a").select_related("team")
+        qs = Player.objects.select_related("team")
 
         if search:
             qs = qs.filter(web_name__icontains=search)
@@ -65,8 +66,23 @@ class ComparePlayersView(APIView):
                 req.validated_data["player_a_id"],
                 req.validated_data["player_b_id"],
                 req.validated_data["lang"],
+                req.validated_data["horizon"],
             )
         except ValueError as e:
             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
+
+        return Response(result)
+
+
+class SquadInsightsView(APIView):
+    def post(self, request):
+        req = SquadInsightsRequestSerializer(data=request.data)
+        req.is_valid(raise_exception=True)
+ 
+        try:
+            result = get_squad_insights(req.validated_data["team"], req.validated_data["lang"])
+        except ValueError as e:
+            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+ 
         return Response(result)

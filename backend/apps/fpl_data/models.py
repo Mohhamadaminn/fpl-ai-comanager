@@ -26,6 +26,7 @@ class Player(models.Model):
         FORWARD = "FWD", "Forward"
 
     fpl_id = models.PositiveIntegerField(unique=True)  # 'id' from FPL API
+    code = models.PositiveIntegerField(null=True, blank=True)  # 'code' from FPL API, used for the official photo URL
     first_name = models.CharField(max_length=100)
     second_name = models.CharField(max_length=100)
     web_name = models.CharField(max_length=100)  # display name, e.g. "Salah"

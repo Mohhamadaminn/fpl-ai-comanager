@@ -18,6 +18,28 @@ const SORTS = [
   { value: "name", label: "Name" },
 ];
 
+const STATUS_BADGES = {
+  i: "Injured",
+  s: "Suspended",
+  u: "Unavailable",
+  n: "Not in squad",
+  d: "Doubtful",
+};
+
+function statusBadge(player) {
+  if (player.status && player.status !== "a") {
+    return {
+      label: STATUS_BADGES[player.status] || "Unavailable",
+      tone: player.status === "d" ? "doubtful" : "out",
+    };
+  }
+  const chance = player.chance_of_playing_next_round;
+  if (chance !== null && chance !== undefined && chance < 100) {
+    return { label: "Doubtful", tone: "doubtful" };
+  }
+  return null;
+}
+
 function PlayerPickerModal({ lockedPosition, excludeId, onSelect, onClose }) {
   const [search, setSearch] = useState("");
   const [position, setPosition] = useState(lockedPosition || "");
@@ -102,16 +124,27 @@ function PlayerPickerModal({ lockedPosition, excludeId, onSelect, onClose }) {
         )}
 
         <ul className="picker-list">
-          {players.map((p) => (
-            <li key={p.id} onClick={() => onSelect(p)}>
-              <div className="picker-list-avatar">{p.web_name.slice(0, 2).toUpperCase()}</div>
-              <div className="picker-list-info">
-                <strong>{p.web_name}</strong>
-                <span>{p.team} · {p.position}</span>
-              </div>
-              <span className="picker-list-price">£{p.price}m</span>
-            </li>
-          ))}
+          {players.map((p) => {
+            const badge = statusBadge(p);
+            return (
+              <li key={p.id} onClick={() => onSelect(p)}>
+                <div className="picker-list-avatar">{p.web_name.slice(0, 2).toUpperCase()}</div>
+                <div className="picker-list-info">
+                  <strong>{p.web_name}</strong>
+                  <span>{p.team} · {p.position}</span>
+                  {badge && (
+                    <span
+                      className={`player-status-badge player-status-badge--${badge.tone}`}
+                      title={p.news || badge.label}
+                    >
+                      {badge.label}
+                    </span>
+                  )}
+                </div>
+                <span className="picker-list-price">£{p.price}m</span>
+              </li>
+            );
+          })}
           {!loading && players.length === 0 && (
             <li className="picker-empty">No players found</li>
           )}

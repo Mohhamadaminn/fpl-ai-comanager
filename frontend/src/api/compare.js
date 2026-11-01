@@ -15,11 +15,17 @@ export async function getTeams() {
   return data;
 }
 
-export async function comparePlayers(playerAId, playerBId, lang = "en") {
+export async function comparePlayers(playerAId, playerBId, horizon = 1, lang = "en") {
   const { data } = await apiClient.post("/compare-players/", {
     player_a_id: playerAId,
     player_b_id: playerBId,
+    horizon,
     lang,
   });
+  return data;
+}
+
+export async function getSquadInsights(team, lang = "en") {
+  const { data } = await apiClient.post("/squad-insights/", { team, lang });
   return data;
 }

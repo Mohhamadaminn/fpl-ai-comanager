@@ -1,22 +1,37 @@
 import asyncio
+import logging
+from datetime import timedelta
+
 from celery import shared_task
 from django.conf import settings
 from django.utils import timezone
-from datetime import timedelta
 from telegram import Bot
-from asyncio.log import logger
+
+from apps.accounts.models import FPLManagerProfile
+from apps.accounts.services import get_manager_gameweek_state, sync_free_transfers
+from apps.fpl_data.compare_engine import _target_gameweek
 from apps.fpl_data.models import Gameweek
 from apps.fpl_data.services import enforce_rtl, sanitize_markdown
-from apps.accounts.models import FPLManagerProfile
-from apps.predictions.services import generate_ai_prediction
-from apps.accounts.services import get_manager_gameweek_state, sync_free_transfers
+from apps.notifications.squad_health import squad_form_context
+from apps.notifications.translations import t
+from apps.predictions.services import (
+    build_squad_health_report,
+    explain_differentials,
+    generate_ai_prediction,
+    get_top_differentials,
+    _fixture_indicator,
+    _form_indicator,
+    _minutes_indicator,
+    _ownership_indicator,
+    _xgi_indicator,
+)
+
+logger = logging.getLogger(__name__)
 
 
 @shared_task
 def send_deadline_reminder_task():
-    from apps.notifications.translations import t
-
-    gw = Gameweek.objects.filter(is_current=True).first() or Gameweek.objects.filter(is_next=True).first()
+    gw = _target_gameweek()
     if not gw:
         return
 
@@ -30,8 +45,6 @@ def send_deadline_reminder_task():
     profiles = FPLManagerProfile.objects.filter(
         telegram_chat_id__isnull=False, fpl_team_id__isnull=False
     )
-
-    from apps.accounts.services import get_manager_gameweek_state, sync_free_transfers
 
     for profile in profiles:
         try:
@@ -71,17 +84,17 @@ def send_deadline_reminder_task():
     gw.reminder_sent = True
     gw.save(update_fields=["reminder_sent"])
 
+
 @shared_task
 def send_weekly_squad_health_task():
-    from apps.fpl_data.models import Gameweek
-    from apps.accounts.models import FPLManagerProfile
-    from apps.accounts.services import get_manager_gameweek_state
-    from apps.predictions.services import build_squad_health_report
-    from apps.notifications.translations import t
-
+    # Picks only exist for the current (or a past) gameweek: the FPL API returns 404 for the next
+    # one until its deadline passes. So the squad is fetched from the current GW; the form data
+    # inside squad_form_context() still targets the next GW on its own.
     gw = Gameweek.objects.filter(is_current=True).first() or Gameweek.objects.filter(is_next=True).first()
     if not gw:
         return
+
+    form_ctx = squad_form_context()  # heavy data, built once for all users
 
     profiles = FPLManagerProfile.objects.filter(
         telegram_chat_id__isnull=False, fpl_team_id__isnull=False
@@ -91,7 +104,7 @@ def send_weekly_squad_health_task():
         try:
             lang = profile.preferred_language
             manager_state = get_manager_gameweek_state(profile.fpl_team_id, gw.fpl_id)
-            report = build_squad_health_report(manager_state["squad"], gw, lang)
+            report = build_squad_health_report(manager_state["squad"], gw, lang, form_ctx=form_ctx)
 
             if not report:
                 message = f"✅ *{t('squad_check_title', lang)} — {gw.name}*\n\n{t('no_concerns', lang)}"
@@ -113,14 +126,6 @@ def send_weekly_squad_health_task():
 
 @shared_task(rate_limit="10/m")
 def generate_differentials_task(telegram_chat_id, lang="en"):
-    from apps.fpl_data.models import Gameweek
-    from apps.notifications.translations import t
-    from apps.predictions.services import (
-        get_top_differentials, explain_differentials,
-        _fixture_indicator, _xgi_indicator, _minutes_indicator,
-        _form_indicator, _ownership_indicator,
-    )
-
     gw = Gameweek.objects.filter(is_current=True).first()
     if not gw:
         return

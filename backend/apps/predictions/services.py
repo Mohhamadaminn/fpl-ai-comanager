@@ -1006,26 +1006,43 @@ def validate_prediction(prediction: AIPrediction, manager_state: dict) -> dict:
         "active_chip": active_chip,
     }
 
-def build_squad_health_report(squad, current_gameweek, lang: str = "en") -> list[dict]:
-    """Checks each squad player for concerning signals: declining form/xGI,
-    injury/suspension, or a tough upcoming fixture swing."""
+def build_squad_health_report(squad, current_gameweek, lang: str = "en", form_ctx=None) -> list[dict]:
+    """Flags per squad player: injury/suspension, position-aware form decline, tough fixtures."""
     from apps.notifications.translations import t
+    from apps.notifications.squad_health import (
+        SQUAD_FORM_FLAG_RATING, squad_form_context, squad_form_snapshot,
+    )
+
+    if form_ctx is None:
+        form_ctx = squad_form_context()
+    form = squad_form_snapshot(squad, form_ctx)
 
     flags = []
-
     for player in squad:
         player_flags = []
-
-        recent = _build_recent_stats(player, current_gameweek, n=5)
-        if recent["form_trend"] == "declining":
-            player_flags.append(t("form_declining", lang).format(xgi=recent["xGI"]))
+        is_out = player.status in ("i", "s", "u")
 
         if player.status in ("i", "d", "s", "u"):
-            status_key = {"i": "status_injured", "d": "status_doubtful", "s": "status_suspended", "u": "status_unavailable"}
-            note = t(status_key.get(player.status, "status_unavailable"), lang)
+            status_key = {"i": "status_injured", "d": "status_doubtful",
+                          "s": "status_suspended", "u": "status_unavailable"}
+            note = t(status_key[player.status], lang)
             if player.news:
                 note += f" — {player.news}"
             player_flags.append(note)
+
+        f = form.get(player.id)
+        if f and not is_out and f["rating"] < SQUAD_FORM_FLAG_RATING:
+            if player.position == "GKP":
+                text = t("form_declining_gkp", lang).format(
+                    games=f["games"], cs=f["clean_sheets"], xgc=f["xgc90"], bps=f["bps"])
+            elif player.position == "DEF":
+                text = t("form_declining_def", lang).format(
+                    games=f["games"], cs=f["clean_sheets"], xgc=f["xgc90"],
+                    dc=f["dc_avg"], xgi=f["xgi"])
+            else:
+                text = t("form_declining_att", lang).format(
+                    games=f["games"], pts=f["points"], xgi=f["xgi"], xgi90=f["xgi90"])
+            player_flags.append(text)
 
         fdr = _next_fixtures_difficulty(player.team)
         if fdr is not None and fdr >= 4:
@@ -1033,7 +1050,6 @@ def build_squad_health_report(squad, current_gameweek, lang: str = "en") -> list
 
         if player_flags:
             flags.append({"player": player, "flags": player_flags})
-
     return flags
 
 

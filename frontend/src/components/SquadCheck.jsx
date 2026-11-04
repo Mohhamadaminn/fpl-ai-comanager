@@ -40,6 +40,53 @@ function StatChips({ insight }) {
   );
 }
 
+
+function ReplacementOptions({ options }) {
+  const [open, setOpen] = useState(false);
+  if (!options || options.length === 0) return null;
+
+  return (
+    <div className="squad-replacement">
+      <button
+        type="button"
+        className="squad-replacement-toggle"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+      >
+        {open ? "Hide Replacement" : "Show Replacement"}
+      </button>
+
+      {open && (
+        <ul className="squad-replacement-list">
+          {options.map((option) => (
+            <li key={option.id} className="squad-replacement-item">
+              <PlayerPhoto
+                className="squad-photo"
+                name={option.name}
+                photoUrl={option.photo_url}
+              />
+              <div className="squad-replacement-info">
+                <strong>{option.name}</strong>
+                <span>
+                  {option.team} · {option.position} · £{option.price}m
+                </span>
+                <div className="squad-chips">
+                  <span className="squad-chip">
+                    {option.recent_points} pts in {option.games} games
+                  </span>
+                  {option.next_fixtures && (
+                    <span className="squad-chip">Next: {option.next_fixtures}</span>
+                  )}
+                </div>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 function SquadCheck() {
   const [team, setTeam] = useState(readSaved);
   const [result, setResult] = useState(null);
@@ -163,6 +210,15 @@ function SquadCheck() {
                   </div>
                   <p className="squad-card-reason">{insight.reason}</p>
                   <StatChips insight={insight} />
+                  <ReplacementOptions
+                    options={
+                      insight.replacement_options?.length
+                        ? insight.replacement_options
+                        : insight.replacement
+                          ? [insight.replacement]
+                          : []
+                    }
+                  />
                 </article>
               ))}
             </div>

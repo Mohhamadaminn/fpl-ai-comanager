@@ -1007,11 +1007,9 @@ def validate_prediction(prediction: AIPrediction, manager_state: dict) -> dict:
     }
 
 def build_squad_health_report(squad, current_gameweek, lang: str = "en", form_ctx=None) -> list[dict]:
-    """Flags per squad player: injury/suspension, position-aware form decline, tough fixtures."""
+    """Flags per squad player: injury/suspension, slump (the website's own rule), tough fixtures."""
+    from apps.notifications.squad_health import squad_form_context, squad_form_snapshot
     from apps.notifications.translations import t
-    from apps.notifications.squad_health import (
-        SQUAD_FORM_FLAG_RATING, squad_form_context, squad_form_snapshot,
-    )
 
     if form_ctx is None:
         form_ctx = squad_form_context()
@@ -1031,7 +1029,7 @@ def build_squad_health_report(squad, current_gameweek, lang: str = "en", form_ct
             player_flags.append(note)
 
         f = form.get(player.id)
-        if f and not is_out and f["rating"] < SQUAD_FORM_FLAG_RATING:
+        if f and f["slump"] and not is_out:
             if player.position == "GKP":
                 text = t("form_declining_gkp", lang).format(
                     games=f["games"], cs=f["clean_sheets"], xgc=f["xgc90"], bps=f["bps"])
@@ -1075,17 +1073,32 @@ def _resolve_captain(captain_id, alternatives, squad):
     return None, True
 
 
-def _next_single_fixture_difficulty(team):
-    """Difficulty of ONLY the very next unfinished fixture (not an average)."""
-    fixture = (
+def _next_single_fixture(team):
+    """Return the team's very next unfinished fixture."""
+    return (
         Fixture.objects.filter(finished=False)
-        .filter(models.Q(team_home=team) | models.Q(team_away=team))
+        .filter(
+            models.Q(team_home=team) |
+            models.Q(team_away=team)
+        )
+        .select_related("team_home", "team_away")
         .order_by("kickoff_time")
         .first()
     )
+
+
+def _next_single_fixture_difficulty(team):
+    """Difficulty of ONLY the very next unfinished fixture."""
+    fixture = _next_single_fixture(team)
+
     if not fixture:
         return None
-    return fixture.difficulty_home if fixture.team_home_id == team.id else fixture.difficulty_away
+
+    if fixture.team_home_id == team.id:
+        return fixture.difficulty_home
+
+    return fixture.difficulty_away
+
 
 def _fixture_indicator(next_fdr, lang="en"):
     from apps.notifications.translations import t
@@ -1150,7 +1163,29 @@ def get_top_differentials(gameweek, top_n=3, ownership_threshold=7.0, max_next_f
 
     scored = []
     for player in eligible:
-        next_fdr = _next_single_fixture_difficulty(player.team)
+        fixture = _next_single_fixture(player.team)
+
+        if fixture:
+            is_home = fixture.team_home_id == player.team_id
+
+            next_fdr = (
+                fixture.difficulty_home
+                if is_home
+                else fixture.difficulty_away
+            )
+
+            opponent = (
+                fixture.team_away
+                if is_home
+                else fixture.team_home
+            )
+
+            opponent_name = str(opponent)
+        else:
+            next_fdr = None
+            is_home = None
+            opponent_name = None
+
         if next_fdr is not None and next_fdr > max_next_fdr:
             continue
 
@@ -1171,8 +1206,13 @@ def get_top_differentials(gameweek, top_n=3, ownership_threshold=7.0, max_next_f
         avg_fdr = _next_fixtures_difficulty(player.team)
         score = _candidate_score(player=player, recent=recent, fdr=avg_fdr)
         scored.append({
-            "player": player, "recent": recent,
-            "next_fdr": next_fdr, "avg_fdr": avg_fdr, "score": score,
+            "player": player,
+            "recent": recent,
+            "next_fdr": next_fdr,
+            "avg_fdr": avg_fdr,
+            "score": score,
+            "opponent": opponent_name,
+            "is_home": is_home,
         })
 
     return sorted(scored, key=lambda x: x["score"], reverse=True)[:top_n]

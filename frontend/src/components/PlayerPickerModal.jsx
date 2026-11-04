@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { searchPlayers, getTeams } from "../api/compare";
+import CustomSelect from "./CustomSelect";
 
 const POSITIONS = [
   { value: "", label: "All" },
@@ -104,19 +105,24 @@ function PlayerPickerModal({ lockedPosition, excludeId, onSelect, onClose }) {
               </button>
             ))}
           </div>
+          
+          <CustomSelect
+            value={team}
+            onChange={setTeam}
+            align="right"
+            options={[
+              { value: "", label: "All Teams" },
+              ...teams.map((t) => ({ value: t.id, label: t.short_name })),
+            ]}
+          />
 
-          <select value={team} onChange={(e) => setTeam(e.target.value)}>
-            <option value="">All Teams</option>
-            {teams.map((t) => (
-              <option key={t.id} value={t.id}>{t.short_name}</option>
-            ))}
-          </select>
+          <CustomSelect
+            value={sort}
+            onChange={setSort}
+            align="left"
+            options={SORTS}
+          />
 
-          <select value={sort} onChange={(e) => setSort(e.target.value)}>
-            {SORTS.map((s) => (
-              <option key={s.value} value={s.value}>{s.label}</option>
-            ))}
-          </select>
         </div>
 
         {lockedPosition && (

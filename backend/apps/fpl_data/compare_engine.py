@@ -1,9 +1,11 @@
 import bisect
+import re
 import hashlib
 import json
 import logging
 import statistics
 
+from collections import Counter
 from django.db.models import Count, Max, Q, Sum
 
 from .models import Fixture, Gameweek, Player, PlayerGameweekStat, Team
@@ -118,15 +120,15 @@ PHOTO_URL = "https://resources.premierleague.com/premierleague25/photos/players/
 # applied as multipliers on top, not as weighted axes.
 POSITION_WEIGHTS = {
     "GKP": {"form": 0.28, "xgc_season": 0.15, "cs_season": 0.10, "bps_recent": 0.12,
-            "team_strength": 0.10, "fixtures_fdr": 0.25},
-    "DEF": {"form": 0.28, "xgi_recent": 0.10, "xgi_season": 0.08, "xgc_season": 0.12,
-            "dc_recent": 0.12, "team_strength": 0.10, "fixtures_fdr": 0.20},
-    # "form" = our own points-based form (recent games + whole season), see _form_value.
-    "MID": {"form": 0.40, "xgi_recent": 0.16, "xgi_season": 0.12,
-            "team_strength": 0.08, "fixtures_fdr": 0.24},  # DC: see MID_DC_*
-    "FWD": {"form": 0.40, "xgi_recent": 0.16, "xgi_season": 0.12,
-            "team_strength": 0.08, "fixtures_fdr": 0.24},
+            "team_strength": 0.10, "fixtures_fdr": 0.25},                       # بدون تغییر
+    "DEF": {"form": 0.27, "xgi_recent": 0.10, "xgi_season": 0.08, "xgc_season": 0.12,
+            "dc_recent": 0.12, "team_strength": 0.10, "fixtures_fdr": 0.21},    # form 0.28→0.27, fixtures 0.20→0.21
+    "MID": {"form": 0.47, "xgi_recent": 0.19, "xgi_season": 0.14,
+            "team_strength": 0.08, "fixtures_fdr": 0.12},                       # form +0.07, xgi_recent +0.03, xgi_season +0.02, fixtures -0.12
+    "FWD": {"form": 0.47, "xgi_recent": 0.19, "xgi_season": 0.14,
+            "team_strength": 0.08, "fixtures_fdr": 0.12},
 }
+
 for _pos, _w in POSITION_WEIGHTS.items():
     assert abs(sum(_w.values()) - 1.0) < 1e-9, f"weights for {_pos} must sum to 1"
 
@@ -278,6 +280,8 @@ def _aggregate_stats(position, gameweek, window_ids, player_ids=None, past_mult=
         stats.update(_EMPTY_LAST)
         stats["last_gws"] = []  # gameweeks of his last games played, newest first
         stats["last_appearance_minutes"] = []
+        stats["last_game_points"] = []        # raw points per game, aligned with last_gws
+        stats["last_game_form_points"] = []   # _game_form_points per game, aligned with last_gws
         stats["gw_minutes"] = {}
 
     appearances = (
@@ -338,10 +342,11 @@ def _add_last_games(out, appearances, past_mult=None):
             continue
         pts = float(points or 0)
         mult = past_mult.get((stats.get("team_id"), int(gw)), 1.0) if past_mult else 1.0
+        form_pts = _game_form_points(pts, mult)
         stats["last_apps"] += 1
         stats["last_minutes"] += float(minutes or 0)
         stats["last_points"] += pts
-        stats["last_form_points"] += _game_form_points(pts, mult)
+        stats["last_form_points"] += form_pts       
         if pts >= RETURN_POINTS:
             stats["last_returns"] += 1
         if pts >= HAUL_POINTS:
@@ -353,6 +358,8 @@ def _add_last_games(out, appearances, past_mult=None):
             stats["last_dc_hits"] += 1
         stats["last_gws"].append(int(gw))
         stats["last_appearance_minutes"].append(float(minutes or 0))
+        stats["last_game_points"].append(pts)
+        stats["last_game_form_points"].append(form_pts)  
         if not stats["last_played_gw"]:
             stats["last_played_gw"] = float(gw)  # rows are newest first
 
@@ -825,7 +832,7 @@ def _player_notes(player, availability, stats, window_ids, minutes_per_appearanc
     return notes
 
 
-def _score_player(player, agg, window_ids, population, fixture_ctx, ignore_minutes=False):
+def _score_player(player, agg, window_ids, population, fixture_ctx, ignore_minutes=False, apply_elite_floor=True):
     position = player.position
     stats = agg.get(player.id, _EMPTY_AGG)
     fixture_list = fixture_ctx["info"].get(player.team_id, [])
@@ -950,6 +957,9 @@ def _score_player(player, agg, window_ids, population, fixture_ctx, ignore_minut
         "weight": 0,  # multiplier, see below
         "last_game": latest_minutes,
     }
+
+    if apply_elite_floor and not sub_risk and (base >= ELITE_BASE_SCORE or scores_well) and last_apps > 0:
+        playing_factor = max(playing_factor, ELITE_MIN_FACTOR)
 
     availability = _availability(player)
     final = base * playing_factor * (availability["multiplier"] if AVAILABILITY_AFFECTS_SCORE else 1.0)
@@ -1100,47 +1110,157 @@ def compare_players(player_a_id: int, player_b_id: int, lang: str = "en", horizo
 
 
 # ---------------------------------------------------------------------------
-# LLM verdict (replacement for the old generate_comparison_verdict)
+# LLM verdict
 # ---------------------------------------------------------------------------
-def _verdict_summary(entry):
+# The CODE decides who is ahead on every aspect (from the same scores and weights that make the
+# final score); the LLM only puts that into words. Its answer is checked against those decisions
+# before it is shown, and a plain template is used if it keeps contradicting them.
+EDGE_CLEAR = 1.5          # an aspect moves the overall score by at least this => "clearly" ahead
+EDGE_SLIGHT = 0.5         # below this the two players are level on that aspect
+PLAYING_TIME_GAP = 0.05   # playing-time multipliers closer than this => equal
+VERDICT_ATTEMPTS = 2
+
+ASPECT_WORDS = {
+    "en": {
+        "form": "recent form (points)",
+        "xgi_recent": "recent goal involvement (chances created and taken)",
+        "xgi_season": "goal involvement over the whole season",
+        "xgc_season": "defensive solidity this season",
+        "cs_season": "clean sheets this season",
+        "bps_recent": "recent shot-stopping (bonus points)",
+        "dc_recent": "recent defensive actions",
+        "team_strength": "strength and form of his team",
+        "fixtures_fdr": "the upcoming fixtures",
+        "playing_time": "playing time",
+    },
+    "fa": {
+        "form": "فرم اخیر",
+        "xgi_recent": "مشارکت اخیر در گل",
+        "xgi_season": "مشارکت در گل در کل فصل",
+        "xgc_season": "استحکام دفاعی در این فصل",
+        "cs_season": "کلین‌شیت در این فصل",
+        "bps_recent": "دفاع از دروازه در بازی‌های اخیر",
+        "dc_recent": "اقدامات دفاعی اخیر",
+        "team_strength": "قدرت و فرم تیمش",
+        "fixtures_fdr": "بازی‌های پیش رو",
+        "playing_time": "دقایق بازی",
+    },
+}
+_PLAYING_TIME_RE = re.compile(r"\bminutes?\b|playing time|rotat|starting (?:place|spot|role)|bench|دقیقه|دقایق|نیمکت|چرخش", re.I)
+
+
+def _role(points):
+    if points >= EDGE_SLIGHT:
+        return "winner"
+    if points <= -EDGE_SLIGHT:
+        return "other"
+    return "level"
+
+
+def _verdict_edges(winner, other):
+    """Who is ahead on each aspect, in overall-score points: weight x score gap per axis, which is
+    exactly how the final score is built. Playing time is the gap between the two multipliers."""
+    points = {}
+    for key, w in winner["breakdown"].items():
+        o = other["breakdown"].get(key)
+        weight = w.get("weight") or 0
+        if weight <= 0 or o is None or w.get("score") is None or o.get("score") is None:
+            continue
+        points[key] = weight * (w["score"] - o["score"])
+    gap = winner["playing_factor"] - other["playing_factor"]
+    avg_base = (winner["base_score"] + other["base_score"]) / 2
+    points["playing_time"] = gap * avg_base if abs(gap) >= PLAYING_TIME_GAP else 0.0
+
+    words = ASPECT_WORDS["en"]
+    edges = sorted(
+        (
+            {"aspect": k, "meaning": words[k], "ahead": _role(p), "size": "clearly" if abs(p) >= EDGE_CLEAR else "slightly"}
+            for k, p in points.items() if _role(p) != "level"
+        ),
+        key=lambda e: -abs(points[e["aspect"]]),
+    )
     return {
-        "id": entry["id"],
+        "edges": edges,
+        "level_on": [k for k, p in points.items() if _role(p) == "level"],
+        "truth": {k: _role(p) for k, p in points.items()},
+        "keeps_it_close": next((e for e in edges if e["ahead"] == "other"), None),
+    }
+
+
+def _verdict_player(entry, covered):
+    """Plain facts about one player. No raw minutes, no FDR numbers and no fixture list: fixture
+    quality and playing time are already decided in the edges."""
+    form = entry["breakdown"]["form"]
+    per_gw = Counter(f["gameweek"] for f in entry["fixtures"])
+    return {
         "team": entry["team"],
         "position": entry["position"],
-        "overall_score": entry["score"],
         "price_million": entry["price"],
         "recent_games": {
-            "appearances": f"{entry['recent_appearances']} of the last {entry['window_gameweeks']} gameweeks",
-            "points_per_appearance": entry["points_per_appearance"],
-            "minutes_per_appearance": entry["minutes_per_appearance"],
-            "minutes_in_last_game": entry["last_game_minutes"],
-            "stats_are_from_his_last_games_played": entry["last_games_used"],
+            "games": form["games"],
+            "points": form["recent_points"],
+            "returns_of_5_plus_points": form["returns"],
+            "hauls_of_10_plus_points": form["hauls"],
             "gameweeks_since_he_last_played": entry["gameweeks_since_played"],
         },
-        "recent_form": {
-            "games": entry["breakdown"]["form"]["games"],
-            "points": entry["breakdown"]["form"]["recent_points"],
-            "returns_of_5_plus_points": entry["breakdown"]["form"]["returns"],
-            "hauls_of_10_plus_points": entry["breakdown"]["form"]["hauls"],
-            "season_points_per_game": entry["breakdown"]["form"]["season_points_per_game"],
-        },
-        "notes_shown_to_the_reader": [n["text"] for n in entry["notes"]],
         "availability": entry["availability"],
-        "upcoming_fixtures": entry["fixtures"],
-        "metrics": {
-            v["label"]: {"value": v["value"], "percentile_vs_same_position": v["score"]}
-            for v in entry["breakdown"].values()
-        },
+        "notes_shown_to_the_reader": [n["text"] for n in entry["notes"]],
+        "no_fixture_in_gameweeks": [g for g in covered if g not in per_gw],
+        "double_gameweeks": [g for g, c in per_gw.items() if c > 1],
     }
+
+
+def _verdict_consistent(text, claims, facts, has_notes):
+    """The verdict is only shown when what it claims matches the decisions made in code."""
+    if not claims:
+        return False
+    truth = facts["truth"]
+    if any(truth.get(c.get("aspect")) != c.get("ahead") for c in claims):
+        return False
+    if truth.get("playing_time") == "level" and not has_notes and _PLAYING_TIME_RE.search(text):
+        return False
+    return True
+
+
+def _fallback_verdict(winner, other, facts, lang, close_call, ruled_out_override, both_out):
+    """Plain sentence built from the decisions, used when the LLM is unavailable or keeps contradicting them."""
+    fa = lang == "fa"
+    w, o = f"{{player_{winner['id']}}}", f"{{player_{other['id']}}}"
+    if both_out:
+        return ("هر دو بازیکن برای گیم‌ویک بعد خارج از دسترس‌اند، پس الان هیچ‌کدوم انتخاب خوبی نیستن." if fa
+                else "Both players are ruled out for the next gameweek, so neither is a good pick right now.")
+    if ruled_out_override:
+        return (f"{w} انتخاب این گیم‌ویکه، چون {o} برای گیم‌ویک بعد خارج از دسترسه." if fa
+                else f"{w} is the pick because {o} is ruled out for the next gameweek.")
+
+    words = ASPECT_WORDS["fa" if fa else "en"]
+    mine = [words[e["aspect"]] for e in facts["edges"] if e["ahead"] == "winner"][:2]
+    theirs = facts["keeps_it_close"]
+    if fa:
+        text = f"{w} انتخاب بهتریه" + (f"، چون در {' و '.join(mine)} جلوتره." if mine else ".")
+        if theirs:
+            text += f" {o} در {words[theirs['aspect']]} جلوتره" + ("، برای همین انتخاب خیلی نزدیکه." if close_call else ".")
+        elif close_call:
+            text += " انتخاب خیلی نزدیکه."
+        return text
+    text = f"{w} is the better pick" + (f", ahead on {' and '.join(mine)}." if mine else ".")
+    if theirs:
+        text += f" {o} is ahead on {words[theirs['aspect']]}" + (", which is why it is a narrow call." if close_call else ".")
+    elif close_call:
+        text += " It is a very narrow call."
+    return text
 
 
 def generate_comparison_verdict(entry_a: dict, entry_b: dict, winner_id: int, gameweek,
                                 lang: str = "en", close_call: bool = False, horizon: int = 1,
                                 ruled_out_override: bool = False) -> str:
     first, second = sorted([entry_a, entry_b], key=lambda e: e["id"])
+    winner, other = (entry_a, entry_b) if entry_a["id"] == winner_id else (entry_b, entry_a)
+    other_id = other["id"]
     both_out = all(e["availability"]["multiplier"] <= 0 for e in (entry_a, entry_b))
     both_weak = all(e["breakdown"]["form"]["score"] < WEAK_FORM_PERCENTILE for e in (entry_a, entry_b))
-    
+    has_notes = any(e["notes"] for e in (entry_a, entry_b))
+    facts = _verdict_edges(winner, other)
 
     # The key includes a fingerprint of everything that drives the verdict, so a cached
     # verdict is discarded automatically when scores, price or availability change.
@@ -1152,19 +1272,29 @@ def generate_comparison_verdict(entry_a: dict, entry_b: dict, winner_id: int, ga
                       "/".join(n["type"] + n["level"] for n in e["notes"]))
         ).encode("utf-8")
         + f"|{int(close_call)}|{horizon}|{int(ruled_out_override)}|{int(both_out)}|{int(both_weak)}|{winner_id}".encode("utf-8")
+        + json.dumps(facts["truth"], sort_keys=True).encode("utf-8")
     ).hexdigest()[:12]
-    cache_key = f"compare:verdict:v9:{first['id']}:{second['id']}:{gameweek.id}:{horizon}:{lang}:{fingerprint}"
+    cache_key = f"compare:verdict:v10:{first['id']}:{second['id']}:{gameweek.id}:{horizon}:{lang}:{fingerprint}"
     cached = redis_client.get(cache_key)
     if cached:
         return cached.decode("utf-8")
 
+    id_to_name = {entry_a["id"]: entry_a["name"], entry_b["id"]: entry_b["name"]}
+
+    def finish(text):
+        return sanitize_markdown(_substitute_player_placeholders(text, id_to_name))
+
     language_word = "Persian" if lang == "fa" else "English"
+    covered = [g for g in range(gameweek.fpl_id, gameweek.fpl_id + horizon) if g <= 38]
     summary = {
-        "player_a": _verdict_summary(entry_a),
-        "player_b": _verdict_summary(entry_b),
         "winner_id": winner_id,
+        "other_id": other_id,
         "close_call": close_call,
         "both_players_in_poor_recent_form": both_weak,
+        "edges": facts["edges"],
+        "level_on": facts["level_on"],
+        "what_keeps_it_close": facts["keeps_it_close"],
+        "players": {str(e["id"]): _verdict_player(e, covered) for e in (entry_a, entry_b)},
     }
 
     if ruled_out_override:
@@ -1175,67 +1305,82 @@ def generate_comparison_verdict(entry_a: dict, entry_b: dict, winner_id: int, ga
         lead = ("Both players are ruled out for the next gameweek. Recommend neither and say so plainly; "
                 "do not call either of them the better pick.")
     elif close_call:
-        lead = (f"Player with id {winner_id} scores higher overall. The scores are very close, so say it is "
-                "a narrow call and mention what could swing it.")
+        lead = (f"Player with id {winner_id} scores slightly higher overall. Say plainly that it is a narrow "
+                "call. If \"what_keeps_it_close\" is not null, mention it as the reason it is close; otherwise "
+                "just say the two are very close. Do not suggest that anything else could swing it.")
     else:
-        lead = (f"Player with id {winner_id} scores higher overall. "
-                "Explain clearly why the winner is the better pick.")
+        lead = (f"Player with id {winner_id} scores higher overall. Explain clearly why he is the better pick "
+                "using the edges that favour him; if an edge for the other player is \"clearly\", acknowledge it "
+                "in one short clause.")
 
     if both_weak and not (ruled_out_override or both_out):
         lead += (" Both players are in poor recent form. Say this plainly in the first sentence and present "
-                "the pick as the less bad option, not as a good one. Do not describe either player in "
-                "positive absolute terms; only compare them to each other.")
+                 "the pick as the less bad option, not as a good one. Do not describe either player in "
+                 "positive absolute terms; only compare them to each other.")
 
     scope = (
         f"the upcoming gameweek ({gameweek.name})" if horizon == 1
         else f"the next {horizon} gameweeks starting with {gameweek.name}"
     )
     prompt = f"""Compare these two FPL players for {scope}, both in the same position.
-This is only about that period, not the long term. Each fixture lists its gameweek, the opponent and
-whether it is home or away; home or away matters in the Premier League, so mention it when it helps.
+This is only about that period, not the long term.
 
 {json.dumps(summary, indent=2)}
 
 {lead}
-Write a short verdict (2-3 sentences) in {language_word}. Give the 1-2 most relevant reasons, and
-make them comparisons between the two players ("A is ahead of B on ..."), not standalone praise of one.
-Percentiles are for your reasoning only; never show them as numbers. Describe them in words that
-match the level: 80+ "among the best", 60-80 "above average", 40-60 "average", 20-40 "below average",
-under 20 "among the weakest". Do not describe a player below the 50th percentile with praise such as
-"strong" or "among the better"; winning the comparison does not make him good.
-If a team has no fixture / a double gameweek, say so.
-The score is pure performance and does NOT include injuries. If the higher-scoring player is
-injured, suspended or doubtful, say so clearly: it matters more than the score. If a player has
-not played for a long time or plays very few minutes (see notes_shown_to_the_reader), mention the
-most important point in simple words a beginner understands.
-Do not describe a player as weaker just because he missed recent gameweeks (for example through
-injury): judge him on how he performed in the games he played.
-Price is NOT part of the score; the score is raw performance only. Mention the price difference
-only when it is large, as budget context for the reader, never as a reason a player performs better.
+Write a short verdict (2-3 sentences) in {language_word}.
+
+How to use the data:
+- "edges" is the complete and final comparison. Each entry says who is ahead on one aspect
+  ("winner" = player {winner_id}, "other" = player {other_id}) and by how much ("clearly" or "slightly").
+  Base the verdict ONLY on these edges: never contradict a direction, never claim an edge on an aspect
+  listed in "level_on", and never compare raw statistics yourself.
+- Give the 1-2 most relevant reasons as comparisons between the two players ("A is ahead of B on ...").
+  Do not describe either player in absolute terms (strong, poor, ...), only compared with the other,
+  unless both_players_in_poor_recent_form says otherwise.
+- The aspect "fixtures_fdr" already weighs every fixture in the period, home or away, and how strong each
+  opponent really is. Do not judge the fixtures yourself and do not name individual opponents.
+- If "playing_time" is in "level_on", both are regular starters: do not mention minutes, rotation or
+  playing time at all. Never speculate about future minutes, form or fixtures.
+- If a team has no fixture ("no_fixture_in_gameweeks") or a double gameweek, say so.
+- The score is pure performance and does NOT include injuries. If the higher-scoring player is
+  injured, suspended or doubtful, say so clearly: it matters more than the score. If a player has
+  not played for a long time or plays very few minutes (see notes_shown_to_the_reader), mention the
+  most important point in simple words a beginner understands.
+- Do not describe a player as weaker just because he missed recent gameweeks (for example through
+  injury): judge him on how he performed in the games he played.
+- Price is NOT part of the score. Mention the price difference only when it is large, as budget
+  context for the reader, never as a reason a player performs better.
 
 Whenever you refer to a player, use {{player_<id>}} (e.g. {{player_{winner_id}}}) - never write
 their actual name.
+Finally fill "claims": one entry for every aspect your verdict says someone is ahead on or level on
+(aspect = the code used in "edges" / "level_on", ahead = winner, other or level). Claim nothing else.
 """
 
-    response = client.chat.completions.create(
-        model="openai/gpt-oss-120b",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.4,
-        response_format={"type": "json_schema", "json_schema": COMPARISON_RESPONSE_SCHEMA},
-    )
+    checked = not (ruled_out_override or both_out)
+    verdict = ""
+    for _ in range(VERDICT_ATTEMPTS):
+        try:
+            response = client.chat.completions.create(
+                model="openai/gpt-oss-120b",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.4,
+                response_format={"type": "json_schema", "json_schema": COMPARISON_RESPONSE_SCHEMA},
+            )
+            raw = response.choices[0].message.content.strip()
+            if raw.startswith("```"):
+                raw = raw.replace("```json", "", 1).replace("```", "").strip()
+            parsed = json.loads(raw)
+        except Exception:
+            logger.warning("Verdict generation failed", exc_info=True)
+            continue
+        text = (parsed.get("verdict") or "").strip()
+        if text and (not checked or _verdict_consistent(text, parsed.get("claims") or [], facts, has_notes)):
+            verdict = finish(text)
+            redis_client.set(cache_key, verdict, ex=VERDICT_TTL)
+            return verdict
+        logger.warning("Verdict rejected by the consistency check: %r", text[:200])
 
-    raw = response.choices[0].message.content.strip()
-    if raw.startswith("```"):
-        raw = raw.replace("```json", "", 1).replace("```", "").strip()
-
-    try:
-        verdict = json.loads(raw).get("verdict", "")
-    except json.JSONDecodeError:
-        logger.warning("Verdict JSON could not be parsed: %r", raw[:200])
-        return ""
-
-    id_to_name = {entry_a["id"]: entry_a["name"], entry_b["id"]: entry_b["name"]}
-    verdict = sanitize_markdown(_substitute_player_placeholders(verdict, id_to_name))
-
-    redis_client.set(cache_key, verdict, ex=VERDICT_TTL)
-    return verdict
+    # Not cached: a transient failure should not hide a good LLM verdict for hours.
+    return finish(_fallback_verdict(winner, other, facts, lang, close_call, ruled_out_override, both_out))

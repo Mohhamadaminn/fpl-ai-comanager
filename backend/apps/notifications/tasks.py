@@ -29,6 +29,7 @@ from apps.predictions.services import (
 logger = logging.getLogger(__name__)
 
 
+
 @shared_task
 def send_deadline_reminder_task():
     gw = _target_gameweek()
@@ -153,7 +154,31 @@ def generate_differentials_task(telegram_chat_id, lang="en"):
                 _form_indicator(p.form, lang),
                 _ownership_indicator(p.selected_by_percent, lang),
             ])
-            lines.append(f"\n*{p.web_name}* ({p.selected_by_percent}% {t('owned', lang)})\n{indicators}\n_{reason}_")
+            opponent_label = ""
+
+            if d["opponent"] is not None:
+                venue = "H" if d["is_home"] else "A"
+                opponent_label = (
+                    f" vs {sanitize_markdown(d['opponent'])} ({venue})"
+                )
+
+            player_name = f"{p.web_name}{opponent_label}"
+
+            if lang == "fa":
+                ownership = (
+                    f"درصد انتخاب: {p.selected_by_percent}%"
+                )
+            else:
+                ownership = (
+                    f"{p.selected_by_percent}% {t('owned', lang)}"
+                )
+
+            lines.append(
+                f"\n*{player_name}*\n"
+                f"{ownership}\n"
+                f"{indicators}\n"
+                f"_{reason}_"
+            )
         message = "\n".join(lines)
 
     message = enforce_rtl(message, lang)

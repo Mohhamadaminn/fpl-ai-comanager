@@ -8,28 +8,43 @@ function Hero() {
       <div className="hero-inner">
         <div className="hero-content">
           <span className="hero-eyebrow">AI-Powered FPL Analytics</span>
+
           <h1>Make Smarter FPL Decisions.</h1>
-          <p>Compare players. Analyze the numbers. Find your next winning pick.</p>
-          <button className="hero-cta" onClick={() => scrollTo("compare")}>
+
+          <p>
+            Compare players. Analyze the numbers. Find your next winning pick.
+          </p>
+
+          <button
+            className="hero-cta"
+            onClick={() => scrollTo("compare")}
+          >
             Compare Players
           </button>
         </div>
 
+
         <div className="hero-visual" aria-hidden="true">
-          {/*
-            TODO: swap this placeholder for a real image, e.g.:
-            <img src={haalandImg} alt="" className="hero-visual-img" />
-            import haalandImg from "../assets/hero-player.jpg";
-          */}
-          <div className="hero-visual-placeholder">
-            <svg viewBox="0 0 200 200" width="140" height="140">
-              <circle cx="100" cy="100" r="95" fill="none" stroke="currentColor" strokeWidth="2" opacity="0.5" />
-              <circle cx="100" cy="100" r="60" fill="none" stroke="currentColor" strokeWidth="1.5" opacity="0.3" />
-              <circle cx="100" cy="70" r="22" fill="currentColor" opacity="0.9" />
-              <path d="M60 170 Q100 120 140 170" fill="none" stroke="currentColor" strokeWidth="3" opacity="0.9" />
+          <div className="hero-avatar">
+            <svg className="hero-crown" viewBox="0 0 64 48">
+              <defs>
+                <linearGradient id="gold" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0" stopColor="#ffe08a" />
+                  <stop offset="1" stopColor="#f0a920" />
+                </linearGradient>
+              </defs>
+              <path d="M4 42 L8 12 L22 26 L32 6 L42 26 L56 12 L60 42 Z" fill="url(#gold)" />
+              <rect x="4" y="38" width="56" height="7" rx="2" fill="#d98e0f" />
+              <circle cx="8" cy="11" r="3.5" fill="#ffe08a" />
+              <circle cx="32" cy="5" r="3.5" fill="#ffe08a" />
+              <circle cx="56" cy="11" r="3.5" fill="#ffe08a" />
             </svg>
+            <img src="/haaland-meditation.png" alt="" className="hero-haaland" />
           </div>
         </div>
+
+
+
       </div>
     </section>
   );

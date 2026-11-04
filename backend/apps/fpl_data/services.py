@@ -48,16 +48,9 @@ def sanitize_markdown(text: str) -> str:
     return re.sub(r'([*_`\[\]])', '', text)
 
 
-RTL_MARK = "\u200F"
-
 def enforce_rtl(text: str, lang: str) -> str:
-    """Force RTL paragraph direction for Persian text that mixes in English
-    names/numbers, since Telegram's bidi algorithm can otherwise render the
-    whole line LTR if it starts with a Latin character."""
-    if lang == "fa" and text:
-        return RTL_MARK + text
+    """Return the message without additional bidi control characters."""
     return text
-
 
 
 def sync_bootstrap_data():
@@ -456,7 +449,6 @@ def cache_performance_message(fpl_team_id: int, gameweek_id: int, lang: str, mes
 
 
 
-
 COMPARISON_RESPONSE_SCHEMA = {
     "name": "fpl_player_comparison",
     "strict": True,
@@ -469,15 +461,37 @@ COMPARISON_RESPONSE_SCHEMA = {
                 "description": (
                     "2-3 natural, conversational sentences explaining why the winner is the "
                     "better pick between these two same-position players — like a knowledgeable "
-                    "friend giving advice, not a stats readout. Whenever you refer to a player, "
-                    "use the placeholder {player_<id>} (e.g. {player_123}) with the id from the "
-                    "input data — NEVER write a player's actual name. Cite 1-2 of the most "
-                    "compelling stats described in plain words, never as raw 'label number' "
-                    "pairs (e.g. never 'form 8.0' or 'xGI 4.2')."
+                    "friend giving advice, not a stats readout. Base it only on the edges given "
+                    "in the input. Whenever you refer to a player, use the placeholder "
+                    "{player_<id>} (e.g. {player_123}) with the id from the input data — NEVER "
+                    "write a player's actual name. Cite 1-2 of the most compelling points "
+                    "described in plain words, never as raw 'label number' pairs "
+                    "(e.g. never 'form 8.0' or 'xGI 4.2')."
                 ),
             },
+            "claims": {
+                "type": "array",
+                "description": (
+                    "One entry for every aspect the verdict says someone is ahead on or level on. "
+                    "Use only the aspect codes and directions from the input; claim nothing else."
+                ),
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "aspect": {
+                            "type": "string",
+                            "enum": ["form", "xgi_recent", "xgi_season", "xgc_season", "cs_season",
+                                     "bps_recent", "dc_recent", "team_strength", "fixtures_fdr",
+                                     "playing_time"],
+                        },
+                        "ahead": {"type": "string", "enum": ["winner", "other", "level"]},
+                    },
+                    "required": ["aspect", "ahead"],
+                    "additionalProperties": False,
+                },
+            },
         },
-        "required": ["verdict"],
+        "required": ["verdict", "claims"],
         "additionalProperties": False,
     },
 }

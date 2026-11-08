@@ -14,9 +14,11 @@ from telegram.ext import (
     filters,
 )
 from django.conf import settings
-from django.contrib.auth.models import User
+from django.contrib.auth import get_user_model
 from apps.accounts.models import FPLManagerProfile
 
+
+User = get_user_model()
 logger = logging.getLogger(__name__)
 
 WAITING_FOR_TEAM_LINK = 1
@@ -289,7 +291,6 @@ async def setteamid_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def setteamid_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    from django.db import IntegrityError
     from apps.accounts.services import get_or_create_profile_for_chat
     from apps.notifications.translations import t
 
@@ -300,12 +301,8 @@ async def setteamid_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
         profile = get_or_create_profile_for_chat(chat_id)
         if team_id is None:
             return profile.preferred_language, "not_found"
-        try:
-            profile.fpl_team_id = team_id
-            profile.save(update_fields=["fpl_team_id"])
-        except IntegrityError:
-            # fpl_team_id is unique — another chat already linked this team
-            return profile.preferred_language, "taken"
+        profile.fpl_team_id = team_id
+        profile.save(update_fields=["fpl_team_id"])
         return profile.preferred_language, "ok"
 
     lang, result = await sync_to_async(_save)()
@@ -313,9 +310,6 @@ async def setteamid_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if result == "not_found":
         await update.message.reply_text(t("team_id_not_found", lang))
         return WAITING_FOR_TEAM_LINK
-    if result == "taken":
-        await update.message.reply_text(t("team_id_taken", lang))
-        return ConversationHandler.END
 
     await update.message.reply_text(t("team_saved", lang))
     return ConversationHandler.END

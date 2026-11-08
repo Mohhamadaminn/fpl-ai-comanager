@@ -125,10 +125,6 @@ TRANSLATIONS = {
         "en": "Couldn't find a team ID in that. Please paste your team link again.",
         "fa": "شناسه تیم توی پیامت پیدا نشد. لطفا لینک تیمت رو دوباره بفرست.",
     },
-    "team_id_taken": {
-        "en": "That team is already linked to another chat.",
-        "fa": "این تیم قبلا به یک چت دیگه متصل شده.",
-    },
     "setteamid_prompt": {
         "en": "Go to your Fantasy team, click on the Points tab, and paste the URL link here.",
         "fa": "به تیم فانتزیت برو، روی تب Points بزن و لینک صفحه رو اینجا بفرست.",

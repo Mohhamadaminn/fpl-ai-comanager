@@ -3,7 +3,7 @@ import logging
 
 from celery import shared_task
 from django.conf import settings
-from django.contrib.auth.models import User
+from django.contrib.auth import get_user_model
 from telegram import Bot
 from django.db import models
 
@@ -13,6 +13,9 @@ from apps.accounts.models import FPLManagerProfile
 from apps.accounts.services import get_manager_gameweek_state
 from .models import AIPrediction, PredictionEvaluation
 from .services import build_squad_fingerprint, evaluate_gameweek, generate_ai_prediction
+
+
+User = get_user_model()
 
 
 def _get_next_opponent_label(team):
@@ -36,7 +39,16 @@ logger = logging.getLogger(__name__)
 
 @shared_task
 def evaluate_finished_gameweeks_task():
-    profile = FPLManagerProfile.objects.filter(user__username="fpl_manager").first()
+    profile = None
+    if settings.EVALUATION_MANAGER_EMAIL:
+        profile = (
+            FPLManagerProfile.objects
+            .filter(user__email__iexact=settings.EVALUATION_MANAGER_EMAIL,
+                    fpl_team_id__isnull=False)
+            .first()
+        )
+    if profile is None:
+        logger.warning("No evaluation manager profile configured; using default 2x multiplier.")
 
     finished_gws = Gameweek.objects.filter(finished=True)
     for gw in finished_gws:
@@ -48,9 +60,9 @@ def evaluate_finished_gameweeks_task():
                 try:
                     manager_state = get_manager_gameweek_state(profile.fpl_team_id, gw.fpl_id)
                 except Exception:
-                    pass  # fall back to default 2x multiplier if this fails
+                    logger.exception("Could not load manager state for GW %s; using default.", gw.fpl_id)
             evaluate_gameweek(gw, manager_state)
-
+            
 
 @shared_task(rate_limit="10/m", bind=True, max_retries=2, default_retry_delay=30)
 def generate_prediction_task(self, user_id, gameweek_id, fpl_team_id, telegram_chat_id, lang="en"):

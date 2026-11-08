@@ -4,6 +4,7 @@ import math
 import json
 import redis
 import bisect, json, logging, statistics
+from django.db import transaction
 from django.db.models import Count, Q, Sum
 from groq import Groq
 from django.conf import settings
@@ -11,6 +12,15 @@ from decimal import Decimal
 from .models import Team, Player, Gameweek, Fixture, PlayerGameweekStat
 
 FPL_BASE_URL = "https://fantasy.premierleague.com/api"
+
+
+STAT_UPDATE_FIELDS = [
+    "minutes", "goals_scored", "assists", "clean_sheets", "points",
+    "expected_goals", "expected_assists", "expected_goal_involvements",
+    "expected_goals_conceded", "bps", "ict_index", "is_final",
+    "clearances_blocks_interceptions", "recoveries", "tackles",
+    "defensive_contribution", "updated_at",
+]
 
 
 PERFORMANCE_BLURB_SCHEMA = {
@@ -149,39 +159,50 @@ def sync_fixtures():
 
 
 def sync_live_gameweek_stats(gameweek_fpl_id: int):
-    response = requests.get(f"{FPL_BASE_URL}/event/{gameweek_fpl_id}/live/")
+    response = requests.get(f"{FPL_BASE_URL}/event/{gameweek_fpl_id}/live/", timeout=15)
     response.raise_for_status()
     data = response.json()
 
     gameweek = Gameweek.objects.get(fpl_id=gameweek_fpl_id)
+    player_ids = dict(Player.objects.values_list("fpl_id", "id"))  # one query
 
+    rows = []
     for element in data["elements"]:
-        player = Player.objects.filter(fpl_id=element["id"]).first()
-        if not player:
+        player_id = player_ids.get(element["id"])
+        if player_id is None:
             continue
 
         stats = element["stats"]
-        PlayerGameweekStat.objects.update_or_create(
-            player=player,
-            gameweek=gameweek,
-            defaults={
-                "minutes": stats["minutes"],
-                "goals_scored": stats["goals_scored"],
-                "assists": stats["assists"],
-                "clean_sheets": stats["clean_sheets"],
-                "points": stats["total_points"],
-                "expected_goals": stats.get("expected_goals") or 0,
-                "expected_assists": stats.get("expected_assists") or 0,
-                "expected_goal_involvements": stats.get("expected_goal_involvements") or 0,
-                "expected_goals_conceded": stats.get("expected_goals_conceded") or 0,  # NEW
-                "bps": stats.get("bps", 0),
-                "ict_index": stats.get("ict_index") or 0,
-                "is_final": gameweek.finished,
-                "clearances_blocks_interceptions": stats.get("clearances_blocks_interceptions") or 0,
-                "recoveries": stats.get("recoveries") or 0,
-                "tackles": stats.get("tackles") or 0,
-                "defensive_contribution": stats.get("defensive_contribution") or 0,
-            },
+        rows.append(
+            PlayerGameweekStat(
+                player_id=player_id,
+                gameweek=gameweek,
+                minutes=stats["minutes"],
+                goals_scored=stats["goals_scored"],
+                assists=stats["assists"],
+                clean_sheets=stats["clean_sheets"],
+                points=stats["total_points"],
+                expected_goals=stats.get("expected_goals") or 0,
+                expected_assists=stats.get("expected_assists") or 0,
+                expected_goal_involvements=stats.get("expected_goal_involvements") or 0,
+                expected_goals_conceded=stats.get("expected_goals_conceded") or 0,
+                bps=stats.get("bps", 0),
+                ict_index=stats.get("ict_index") or 0,
+                is_final=gameweek.finished,
+                clearances_blocks_interceptions=stats.get("clearances_blocks_interceptions") or 0,
+                recoveries=stats.get("recoveries") or 0,
+                tackles=stats.get("tackles") or 0,
+                defensive_contribution=stats.get("defensive_contribution") or 0,
+            )
+        )
+
+    with transaction.atomic():
+        PlayerGameweekStat.objects.bulk_create(
+            rows,
+            batch_size=500,
+            update_conflicts=True,
+            unique_fields=["player", "gameweek"],
+            update_fields=STAT_UPDATE_FIELDS,
         )
 
 

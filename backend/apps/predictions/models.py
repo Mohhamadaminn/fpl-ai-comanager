@@ -1,10 +1,10 @@
 from django.db import models
-from django.contrib.auth.models import User
+from django.conf import settings
 from apps.fpl_data.models import Player, Gameweek
 
 
 class AIPrediction(models.Model):
-    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="ai_predictions")
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="ai_predictions")
     gameweek = models.ForeignKey(Gameweek, on_delete=models.CASCADE, related_name="ai_predictions")
     squad_fingerprint = models.CharField(max_length=64, db_index=True)  # for cache
     suggested_captain = models.ForeignKey(Player, on_delete=models.SET_NULL, null=True, related_name="+")
@@ -26,7 +26,7 @@ class AIPrediction(models.Model):
 
 
 class UserPrediction(models.Model):
-    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="predictions")
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="predictions")
     gameweek = models.ForeignKey(Gameweek, on_delete=models.CASCADE, related_name="user_predictions")
     chosen_captain = models.ForeignKey(Player, on_delete=models.SET_NULL, null=True, related_name="+")
     transfer_out = models.ForeignKey(Player, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
@@ -43,8 +43,7 @@ class UserPrediction(models.Model):
 
 
     def __str__(self):
-        return f"{self.user.username}'s Prediction - GW{self.gameweek.fpl_id}"
-
+        return f"{self.user.email}'s Prediction - GW{self.gameweek.fpl_id}"
 
 class PredictionEvaluation(models.Model):
     gameweek = models.OneToOneField(Gameweek, on_delete=models.CASCADE, related_name="evaluation")

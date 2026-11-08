@@ -2,7 +2,7 @@ import json
 from datetime import datetime, timezone
 from unittest.mock import Mock, patch
 
-from django.contrib.auth.models import User
+from django.contrib.auth import get_user_model
 from django.db import connection
 from django.test import TestCase
 from django.test.utils import CaptureQueriesContext
@@ -11,9 +11,11 @@ from apps.fpl_data.models import Gameweek, Player, PlayerGameweekStat, Team
 from apps.predictions.services import build_player_context, generate_ai_prediction
 
 
+User = get_user_model()
+
 class GenerateAIPredictionTests(TestCase):
     def setUp(self):
-        self.user = User.objects.create_user(username="tester")
+        self.user = User.objects.create_user(email="tester@example.com", password="S0me-Strong-Pass")
         self.team = Team.objects.create(fpl_id=1, name="Arsenal", short_name="ARS")
         self.gameweek = Gameweek.objects.create(
             fpl_id=1,

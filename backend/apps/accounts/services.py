@@ -1,8 +1,10 @@
 import requests
-from django.contrib.auth.models import User
+from django.db import IntegrityError, transaction
+from django.contrib.auth import get_user_model
 from apps.fpl_data.models import Player
 from apps.accounts.models import FPLManagerProfile
 
+User = get_user_model()
 
 FPL_BASE_URL = "https://fantasy.premierleague.com/api"
 
@@ -78,7 +80,16 @@ def get_or_create_profile_for_chat(chat_id: int) -> FPLManagerProfile:
     if profile:
         return profile
 
-    user, _ = User.objects.get_or_create(username=f"tg_{chat_id}")
+    email = f"tg_{chat_id}@telegram.invalid"
+    user = User.objects.filter(email=email).first()
+    if user is None:
+        try:
+            with transaction.atomic():
+                user = User.objects.create_user(email=email)  # no password -> unusable
+        except IntegrityError:
+            # another request created it at the same moment
+            user = User.objects.get(email=email)
+
     profile, _ = FPLManagerProfile.objects.get_or_create(
         user=user, defaults={"telegram_chat_id": chat_id}
     )

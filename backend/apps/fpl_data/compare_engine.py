@@ -47,6 +47,7 @@ FORM_PRIOR_APPS_SEASON = 3.0
 HOME_EASE_SHIFT = 0.05        # home side easier / away side harder (0-1 ease scale), form part only
 RATING_SPREAD = 25            # z-score -> rating points (rating = 50 + spread * z, clipped to 0-100)
 MAX_HORIZON = 5               # most gameweeks a user can look ahead
+UPCOMING_FIXTURE_WEIGHTS = (0.5, 0.25, 0.25)
 TEAM_FORM_WINDOW = 5          # a team's last N PLAYED gameweeks count as its recent form (blanks are skipped)
 TEAM_FORM_PRIOR = 3           # matches of league-average output added as a prior
 TEAM_FORM_SHARE = 0.7         # weight of team strength/form vs official FDR in fixture ease
@@ -112,6 +113,23 @@ MID_DC_HIT_SHARE = 0.6
 MID_DC_MIN_APPEARANCES = 3
 MID_DC_BONUS_MAX = 6.0           # most points a midfielder can add to his base score from DC
 
+# DC per position: 10 in one game earns the FPL bonus for defenders, 12 for midfielders.
+# For both it is a capped bonus (not a weighted axis) that only counts with a real DC threat.
+DC_THRESHOLD = {"DEF": 10, "MID": MID_DC_THRESHOLD}
+DC_AVG_MIN = {"DEF": 8, "MID": MID_DC_AVG_MIN}         # DEF: starting point, not tuned yet
+DC_BONUS_MAX = {"DEF": 4.0, "MID": MID_DC_BONUS_MAX}   # DEF smaller: DC points are already inside form
+
+# Form: top end bends instead of clipping at 100 (rating 80 and above counts half per extra point)
+FORM_RATING_KNEE = 30
+FORM_RATING_TOP_SLOPE = 0.5
+# Form: robustness against one lone spike and against absences
+FORM_BEST_OUT_SHARE = 0.4        # share of recent form measured WITHOUT his single best game
+BLANK_POINTS = 2                 # a game with at most this many points is a "blank"
+ISOLATED_MIN_BLANK_SHARE = 0.75  # lone return + this share of the OTHER games blank => bonuses dropped
+ISOLATED_BONUS_FACTOR = 0.0
+ABSENCE_MIN = 2                  # missed gameweeks in a row that count as an absence
+POST_ABSENCE_WEIGHT = 2.0        # games played after his latest absence count this many times
+
 WEAK_FORM_PERCENTILE = 51  # below this, a player's recent form is clearly below average
 
 PHOTO_URL = "https://resources.premierleague.com/premierleague25/photos/players/110x140/{code}.png"
@@ -120,11 +138,11 @@ PHOTO_URL = "https://resources.premierleague.com/premierleague25/photos/players/
 # applied as multipliers on top, not as weighted axes.
 POSITION_WEIGHTS = {
     "GKP": {"form": 0.28, "xgc_season": 0.15, "cs_season": 0.10, "bps_recent": 0.12,
-            "team_strength": 0.10, "fixtures_fdr": 0.25},                       # بدون تغییر
-    "DEF": {"form": 0.27, "xgi_recent": 0.10, "xgi_season": 0.08, "xgc_season": 0.12,
-            "dc_recent": 0.12, "team_strength": 0.10, "fixtures_fdr": 0.21},    # form 0.28→0.27, fixtures 0.20→0.21
+            "team_strength": 0.10, "fixtures_fdr": 0.25},
+    "DEF": {"form": 0.31, "xgi_recent": 0.11, "xgi_season": 0.09, "xgc_season": 0.14,
+            "team_strength": 0.11, "fixtures_fdr": 0.24},
     "MID": {"form": 0.47, "xgi_recent": 0.19, "xgi_season": 0.14,
-            "team_strength": 0.08, "fixtures_fdr": 0.12},                       # form +0.07, xgi_recent +0.03, xgi_season +0.02, fixtures -0.12
+            "team_strength": 0.08, "fixtures_fdr": 0.12},
     "FWD": {"form": 0.47, "xgi_recent": 0.19, "xgi_season": 0.14,
             "team_strength": 0.08, "fixtures_fdr": 0.12},
 }
@@ -209,6 +227,22 @@ def _zscore_rating(value, values, spread=None):
     return round(_rating_from_stats(value, mean, std, spread), 1)
 
 
+def _form_rating(value, values):
+    """Like _zscore_rating for form, but the top end bends instead of clipping at 100, so two elite
+    players (6.7 and 7.3 points a game) no longer both get 100."""
+    n = len(values)
+    if n < 2:
+        return 50.0
+    mean = sum(values) / n
+    std = (sum((v - mean) ** 2 for v in values) / n) ** 0.5
+    if std <= 0:
+        return 50.0
+    x = FORM_RATING_SPREAD * (value - mean) / std
+    if x > FORM_RATING_KNEE:
+        x = FORM_RATING_KNEE + FORM_RATING_TOP_SLOPE * (x - FORM_RATING_KNEE)
+    return round(max(0.0, min(100.0, 50 + x)), 1)
+
+
 # ---------------------------------------------------------------------------
 # Data access
 # ---------------------------------------------------------------------------
@@ -268,7 +302,7 @@ def _aggregate_stats(position, gameweek, window_ids, player_ids=None, past_mult=
         recent_apps=Count("id", filter=recent & Q(minutes__gt=0)),
         recent_dc_hits=Count(
             "id",
-            filter=recent & Q(minutes__gt=0) & Q(defensive_contribution__gte=MID_DC_THRESHOLD),
+            filter=recent & Q(minutes__gt=0) & Q(defensive_contribution__gte=DC_THRESHOLD.get(position, MID_DC_THRESHOLD)),
         ),
     )
     out = {}
@@ -282,6 +316,7 @@ def _aggregate_stats(position, gameweek, window_ids, player_ids=None, past_mult=
         stats["last_appearance_minutes"] = []
         stats["last_game_points"] = []        # raw points per game, aligned with last_gws
         stats["last_game_form_points"] = []   # _game_form_points per game, aligned with last_gws
+        stats["last_game_mults"] = []                         # NEW
         stats["gw_minutes"] = {}
 
     appearances = (
@@ -292,7 +327,7 @@ def _aggregate_stats(position, gameweek, window_ids, player_ids=None, past_mult=
             "expected_goal_involvements", "bps", "defensive_contribution",
         )
     )
-    _add_last_games(out, appearances.iterator(), past_mult)
+    _add_last_games(out, appearances.iterator(), past_mult, DC_THRESHOLD.get(position, MID_DC_THRESHOLD))
     _add_gameweek_minutes(out, qs, window_ids)
     return out
 
@@ -332,7 +367,7 @@ def _game_form_points(points, mult=1.0):
     return (points + bonus) * mult
 
 
-def _add_last_games(out, appearances, past_mult=None):
+def _add_last_games(out, appearances, past_mult=None, dc_threshold=MID_DC_THRESHOLD):
     """Fill the last_* totals from rows (player_id, gameweek, minutes, points, xgi, bps, dc) that
     are sorted by player and then newest gameweek first; keeps each player's newest games only.
     past_mult: {(team_id, gameweek): multiplier} that scales a game by how hard the fixture was."""
@@ -354,12 +389,13 @@ def _add_last_games(out, appearances, past_mult=None):
         stats["last_xgi"] += float(xgi or 0)
         stats["last_bps"] += float(bps or 0)
         stats["last_dc"] += float(dc or 0)
-        if float(dc or 0) >= MID_DC_THRESHOLD:
+        if float(dc or 0) >= dc_threshold:
             stats["last_dc_hits"] += 1
         stats["last_gws"].append(int(gw))
         stats["last_appearance_minutes"].append(float(minutes or 0))
         stats["last_game_points"].append(pts)
-        stats["last_game_form_points"].append(form_pts)  
+        stats["last_game_form_points"].append(form_pts) 
+        stats["last_game_mults"].append(mult)  
         if not stats["last_played_gw"]:
             stats["last_played_gw"] = float(gw)  # rows are newest first
 
@@ -400,21 +436,65 @@ _EMPTY_AGG = {
     "recent_dc_hits": 0.0, "recent_points": 0.0,
     **_EMPTY_LAST,
     "last_gws": (),
+    "last_game_points": (),
+    "last_game_form_points": (),
+    "last_game_mults": (),
     "gw_minutes": {},
 }
 
 
-# ---------------------------------------------------------------------------
-# Same-position population (what percentiles are measured against)
-# ---------------------------------------------------------------------------
+def _post_absence_count(gws):
+    """How many of his newest games came after his latest absence of ABSENCE_MIN+ gameweeks.
+    gws: gameweeks of his last games played, newest first. 0 when there is no such absence.
+    (A blank gameweek of his team looks like an absence here; it only re-weights, it never punishes.)"""
+    for i in range(1, len(gws)):
+        if gws[i - 1] - gws[i] - 1 >= ABSENCE_MIN:
+            return i
+    return 0
+
+
+def _recent_form_games(stats):
+    """[(form points, weight)] for his last games, newest first.
+    - A lone return/haul (his only return, the other games mostly blanks) loses its bonuses.
+    - Games after his latest absence weigh POST_ABSENCE_WEIGHT times."""
+    points, mults = stats["last_game_points"], stats["last_game_mults"]
+    returns = [i for i, p in enumerate(points) if p >= RETURN_POINTS]
+    isolated = None
+    if len(returns) == 1 and len(points) >= 3:
+        others = [p for i, p in enumerate(points) if i != returns[0]]
+        if sum(1 for p in others if p <= BLANK_POINTS) / len(others) >= ISOLATED_MIN_BLANK_SHARE:
+            isolated = returns[0]
+    after = _post_absence_count(stats["last_gws"])
+    games = []
+    for i, (p, mult) in enumerate(zip(points, mults)):
+        bonus = (RETURN_BONUS if p >= RETURN_POINTS else 0.0) + (HAUL_BONUS if p >= HAUL_POINTS else 0.0)
+        if i == isolated:
+            bonus *= ISOLATED_BONUS_FACTOR
+        games.append(((p + bonus) * mult, POST_ABSENCE_WEIGHT if i < after else 1.0))
+    return games
+
+
+def _shrunk_recent(games, median):
+    weight = sum(w for _, w in games)
+    return (sum(f * w for f, w in games) + median * FORM_PRIOR_APPS_RECENT) / (weight + FORM_PRIOR_APPS_RECENT)
+
+
+def _recent_form(stats, median):
+    """Per-game recent form, robust to one spike: a blend of all his games and the same without his
+    single best game (3+ games needed, else all games)."""
+    games = _recent_form_games(stats)
+    full = _shrunk_recent(games, median)
+    if len(games) < 3:
+        return full
+    best = max(range(len(games)), key=lambda i: games[i][0])
+    rest = games[:best] + games[best + 1:]
+    return (1 - FORM_BEST_OUT_SHARE) * full + FORM_BEST_OUT_SHARE * _shrunk_recent(rest, median)
+
+
 def _form_value(stats, medians):
-    """Our own form: per game played, blended over his last games and the whole season. The recent part
-    counts returns, hauls and fixture difficulty (see _game_form_points); the season part is plain
-    points per game. Each part is shrunk toward the pool median so one or two games cannot dominate.
-    Returns (form value, recent part, season part), all on a "points per game" scale."""
-    recent = (stats["last_form_points"] + medians["form_recent"] * FORM_PRIOR_APPS_RECENT) / (
-        stats["last_apps"] + FORM_PRIOR_APPS_RECENT
-    )
+    """Our own form (points-per-game scale): the recent part is robust (see _recent_form), the season
+    part is plain points per game shrunk toward the pool median. Returns (form, recent, season)."""
+    recent = _recent_form(stats, medians["form_recent"])
     season = (stats["season_points"] + medians["form_season"] * FORM_PRIOR_APPS_SEASON) / (
         stats["season_apps"] + FORM_PRIOR_APPS_SEASON
     )
@@ -436,9 +516,10 @@ def _build_population(position, gameweek, window_ids):
     medians["form_season"] = statistics.median(season_ppg) if season_ppg else 0.0
 
     keys = list(POSITION_WEIGHTS[position])
-    if position == "MID":
-        keys.append("dc_recent")  # not a weighted axis for midfielders, but needed for the DC bonus
+    if position in DC_BONUS_MAX and "dc_recent" not in keys:
+        keys.append("dc_recent")   # needed for the DC bonus (midfielders and defenders)
 
+    
     for key in keys:
         spec = METRICS.get(key)
         if not spec:
@@ -458,7 +539,7 @@ def _build_population(position, gameweek, window_ids):
 
 
 def _get_population(position, gameweek, window_ids):
-    key = f"compare:pop:v11:{position}:{gameweek.fpl_id}:{window_ids[0]}"
+    key = f"compare:pop:v12:{position}:{gameweek.fpl_id}:{window_ids[0]}"
     try:
         cached = redis_client.get(key)
         if cached:
@@ -699,6 +780,7 @@ def _fixture_context(gameweek, position, horizon=1, ratings=None):
     blend = FIXTURE_MODE_BLEND[position]
     values = {t.id: 0.0 for t in teams}
     info = {t.id: [] for t in teams}
+    per_gw = {t.id: {} for t in teams}   # team -> {gameweek: [ease of each fixture]}
 
     for f in fixtures:
         sides = (
@@ -711,10 +793,27 @@ def _fixture_context(gameweek, position, horizon=1, ratings=None):
                 for mode, w in blend.items()
             )
             values[own.id] += ease
+            per_gw[own.id].setdefault(f.gameweek.fpl_id, []).append(ease)
             info[own.id].append({
                 "gameweek": f.gameweek.fpl_id, "opponent": opp.short_name, "home": is_home, "fdr": fdr,
             })
-
+            
+    # Weighted view: his first game weighs most. A double gameweek is the average of its two games,
+    # a blank is skipped (weights of the games he really has are renormalized).
+    weighted_values, next_values = {}, {}
+    for team_id, by_gw in per_gw.items():
+        if not by_gw:
+            continue
+        num = den = 0.0
+        for i, gw in enumerate(sorted(by_gw)):
+            w = UPCOMING_FIXTURE_WEIGHTS[min(i, len(UPCOMING_FIXTURE_WEIGHTS) - 1)]
+            eases = by_gw[gw]
+            num += w * sum(eases) / len(eases)
+            den += w
+        weighted_values[team_id] = num / den
+        first = by_gw[min(by_gw)]
+        next_values[team_id] = sum(first) / len(first)
+    weighted_list, next_list = list(weighted_values.values()), list(next_values.values())   
     all_values = list(values.values())
     return {
         "sorted_values": sorted(all_values),
@@ -723,6 +822,8 @@ def _fixture_context(gameweek, position, horizon=1, ratings=None):
         "info": info,
         "gameweeks": [g.fpl_id for g in gameweeks],
         "team_strength": _team_strength(ratings, position),
+        "weighted_scores": {t: _zscore_rating(v, weighted_list) for t, v in weighted_values.items()},
+        "next_scores": {t: _zscore_rating(v, next_list) for t, v in next_values.items()},
     }
 
 
@@ -747,23 +848,23 @@ def _availability(player):
     }
 
 
-# ---------------------------------------------------------------------------
-# Scoring one player
-# ---------------------------------------------------------------------------
-def _midfielder_dc(stats, population):
-    """Defensive-contribution bonus for a midfielder, only if he has a real DC threat."""
+def _dc_bonus(stats, population, position):
+    """DC bonus for midfielders and defenders, only if he has a real DC threat."""
     apps = stats["last_apps"]
     avg = stats["last_dc"] / apps if apps else 0.0
-    by_average = apps >= MID_DC_MIN_APPEARANCES and avg >= MID_DC_AVG_MIN
+    by_average = apps >= MID_DC_MIN_APPEARANCES and avg >= DC_AVG_MIN[position]
     by_hits = apps >= MID_DC_MIN_APPEARANCES and stats["last_dc_hits"] / apps >= MID_DC_HIT_SHARE
-
     if not (by_average or by_hits):
         return {"active": False, "avg": avg, "pct": 0.0, "bonus": 0.0}
-
     rate = _shrunk_rate_capped(stats["last_dc"], stats["last_minutes"], population["medians"]["dc_recent"])
     pct = _percentile(rate, population["metrics"]["dc_recent"])
     strength = 1.0 if (by_average and by_hits) else 0.75
-    return {"active": True, "avg": avg, "pct": pct, "bonus": round(MID_DC_BONUS_MAX * strength * pct / 100, 2)}
+    return {"active": True, "avg": avg, "pct": pct,
+            "bonus": round(DC_BONUS_MAX[position] * strength * pct / 100, 2)}
+
+
+def _midfielder_dc(stats, population):
+    return _dc_bonus(stats, population, "MID")
 
 
 def _out_label(status):
@@ -845,7 +946,7 @@ def _score_player(player, agg, window_ids, population, fixture_ctx, ignore_minut
     for key, weight in POSITION_WEIGHTS[position].items():
         if key == "form":
             value, form_recent, form_season = _form_value(stats, population["medians"])
-            pct = _zscore_rating(value, population["metrics"]["form"], FORM_RATING_SPREAD)
+            pct = _form_rating(value, population["metrics"]["form"])
         elif key == "fixtures_fdr":
             value, pct = avg_fdr, fixture_pct
         elif key == "team_strength":
@@ -889,15 +990,16 @@ def _score_player(player, agg, window_ids, population, fixture_ctx, ignore_minut
                         f" · {hauls} {'haul' if hauls == 1 else 'hauls'}"),
         })
 
-    if position == "MID":
-        dc = _midfielder_dc(stats, population)
+    if position in DC_BONUS_MAX:                                              # CHANGED (was == "MID")
+        dc = _dc_bonus(stats, population, position)
         base += dc["bonus"]
         breakdown["dc_recent"] = {
             "label": METRICS["dc_recent"]["label"],
             "value": round(dc["avg"], 1),
             "score": dc["pct"],
-            "weight": 0,  # a bonus only for midfielders with a real DC threat
+            "weight": 0,  # a bonus only for players with a real DC threat
             "active": dc["active"],
+            "bonus": dc["bonus"],                                             # (debug / display)
         }
 
     minutes_per_gw = stats["recent_minutes"] / len(window_ids)
@@ -946,7 +1048,7 @@ def _score_player(player, agg, window_ids, population, fixture_ctx, ignore_minut
         playing_factor = min(playing_factor, LAST_GAME_LOW_FACTOR)
     sub_risk = low_minutes_recent or last_game_low
     scores_well = points_pct is not None and points_pct >= HIGH_POINTS_PCT
-    if not sub_risk and (base >= ELITE_BASE_SCORE or scores_well) and last_apps > 0:
+    if apply_elite_floor and not sub_risk and (base >= ELITE_BASE_SCORE or scores_well) and last_apps > 0:
         playing_factor = max(playing_factor, ELITE_MIN_FACTOR)
     if ignore_minutes and not sub_risk:  # equalize only when neither shows recent sub risk
         playing_factor = 1.0
@@ -957,9 +1059,6 @@ def _score_player(player, agg, window_ids, population, fixture_ctx, ignore_minut
         "weight": 0,  # multiplier, see below
         "last_game": latest_minutes,
     }
-
-    if apply_elite_floor and not sub_risk and (base >= ELITE_BASE_SCORE or scores_well) and last_apps > 0:
-        playing_factor = max(playing_factor, ELITE_MIN_FACTOR)
 
     availability = _availability(player)
     final = base * playing_factor * (availability["multiplier"] if AVAILABILITY_AFFECTS_SCORE else 1.0)
@@ -999,6 +1098,7 @@ def _score_player(player, agg, window_ids, population, fixture_ctx, ignore_minut
         "availability": availability,
         "fixtures": fixture_list,
         "breakdown": breakdown,
+        "season_points": int(player.total_points),
     }
 
 
@@ -1077,7 +1177,7 @@ def compare_players(player_a_id: int, player_b_id: int, lang: str = "en", horizo
     entry_b = _score_player(player_b, agg, window_ids, population, fixture_ctx, ignore_minutes)
 
     # Midfielders: if neither has a real DC threat, DC plays no part, so hide the axis.
-    if position == "MID" and not any(e["breakdown"]["dc_recent"]["active"] for e in (entry_a, entry_b)):
+    if position == DC_BONUS_MAX and not any(e["breakdown"]["dc_recent"]["active"] for e in (entry_a, entry_b)):
         for e in (entry_a, entry_b):
             del e["breakdown"]["dc_recent"]
 

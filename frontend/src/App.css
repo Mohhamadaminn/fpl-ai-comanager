@@ -1579,3 +1579,42 @@
     animation: none;
   }
 }
+
+
+.player-select-chosen-photo {
+  width: 48px;
+  height: 60px;
+  border-radius: 10px;
+  object-fit: cover;
+  object-position: top;
+  background: var(--code-bg);
+  flex-shrink: 0;
+}
+
+.player-select-chosen-photo.player-photo-fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent);
+  font-weight: 700;
+  font-size: 14px;
+}
+
+.picker-list-photo {
+  width: 36px;
+  height: 45px;
+  border-radius: 8px;
+  object-fit: cover;
+  object-position: top;
+  background: var(--code-bg);
+  flex-shrink: 0;
+}
+
+.picker-list-photo.player-photo-fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent);
+  font-weight: 700;
+  font-size: 12px;
+}

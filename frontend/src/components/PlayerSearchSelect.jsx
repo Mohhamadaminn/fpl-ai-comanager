@@ -1,5 +1,7 @@
 import { useState } from "react";
 import PlayerPickerModal from "./PlayerPickerModal";
+import PlayerPhoto from "./PlayerPhoto";
+import { photoOf } from "../utils/photo";
 
 const STATUS_BADGES = {
   i: "Injured",
@@ -32,9 +34,11 @@ function PlayerSearchSelect({ label, position, excludeId, value, onSelect }) {
       <div className="player-select">
         <span className="player-select-label">{label}</span>
         <div className="player-select-chosen">
-          <div className="player-select-chosen-avatar">
-            {value.web_name.slice(0, 2).toUpperCase()}
-          </div>
+          <PlayerPhoto
+            className="player-select-chosen-photo"
+            name={value.web_name}
+            photoUrl={photoOf(value)}
+          />
           <div className="player-select-chosen-info">
             <strong>{value.web_name}</strong>
             <span>{value.team} · {value.position} · £{value.price}m</span>

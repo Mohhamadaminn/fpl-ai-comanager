@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback } from "react";
 import { searchPlayers, getTeams } from "../api/compare";
 import CustomSelect from "./CustomSelect";
+import PlayerPhoto from "./PlayerPhoto";
+import { photoOf } from "../utils/photo";
 
 const POSITIONS = [
   { value: "", label: "All" },
@@ -134,7 +136,7 @@ function PlayerPickerModal({ lockedPosition, excludeId, onSelect, onClose }) {
             const badge = statusBadge(p);
             return (
               <li key={p.id} onClick={() => onSelect(p)}>
-                <div className="picker-list-avatar">{p.web_name.slice(0, 2).toUpperCase()}</div>
+                <PlayerPhoto className="picker-list-photo" name={p.web_name} photoUrl={photoOf(p)} />
                 <div className="picker-list-info">
                   <strong>{p.web_name}</strong>
                   <span>{p.team} · {p.position}</span>

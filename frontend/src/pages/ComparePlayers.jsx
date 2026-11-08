@@ -220,8 +220,18 @@ function ComparePlayers() {
                 const b = entryB.breakdown[key];
                 // The better side is decided by the score (what the radar draws), not by the raw
                 // number, because for fixtures (FDR) and goals conceded a lower number is better.
-                const diff = (a.score ?? 0) - (b.score ?? 0);
-                const better = Math.abs(diff) < 0.5 ? null : diff > 0 ? "a" : "b";
+                let better;
+                if (key === "form") {
+                  // Form row shows raw points, so the highlight follows raw points too (per game if the
+                  // number of games differs, so 3 games are not compared with 5).
+                  const sameGames = a.games === b.games;
+                  const va = sameGames ? a.recent_points : a.recent_points_per_game;
+                  const vb = sameGames ? b.recent_points : b.recent_points_per_game;
+                  better = va == null || vb == null || va === vb ? null : va > vb ? "a" : "b";
+                } else {
+                  const diff = (a.score ?? 0) - (b.score ?? 0);
+                  better = Math.abs(diff) < 0.5 ? null : diff > 0 ? "a" : "b";
+                }
                 return (
                   <div className="compare-stat-row" key={key}>
                     <span className={`compare-stat-value left ${better === "a" ? "compare-better-a" : ""}`}>
@@ -236,6 +246,19 @@ function ComparePlayers() {
                   </div>
                 );
               })}
+              {(() => {
+                const sa = entryA.season_points;
+                const sb = entryB.season_points;
+                if (sa == null || sb == null) return null;
+                const better = sa === sb ? null : sa > sb ? "a" : "b";
+                return (
+                  <div className="compare-stat-row">
+                    <span className={`compare-stat-value left ${better === "a" ? "compare-better-a" : ""}`}>{sa}</span>
+                    <span className="compare-stat-label">Season points</span>
+                    <span className={`compare-stat-value right ${better === "b" ? "compare-better-b" : ""}`}>{sb}</span>
+                  </div>
+                );
+              })()}
             <p className="compare-stat-hint">
               The highlighted number is the better one. For fixtures (FDR) and goals conceded, lower is better.
             </p>

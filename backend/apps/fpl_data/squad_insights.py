@@ -56,11 +56,19 @@ SLUMP_MIN_EARLIER_GAMES = 3    # games before his last 5 needed to know his earl
 SLUMP_MIN_DROP = 1.0           # points per game: earlier level (before his last 5 games) minus last-5 average
 # outlook: the whole engine score is clearly below average (form + fixtures + team strength)
 MOVE_ON_SCORE_MAX = 45
+
+# Among players who qualify for "move on", the pricier one wins if his case is almost as strong
+# (same kind of signal, severity within this many points of the worst case).
+MOVE_ON_PRICE_TOLERANCE = 5
+
 # wording of the fixtures in the reason text (engine fixture rating, 50 = average)
 FIXTURE_GOOD_MIN = 58
 FIXTURE_TOUGH_MAX = 42
 DRIVER_MAX_SCORE = 45          # an axis only counts as a reason when it is clearly below average
 HARD_FIXTURE_MAX_PCT = 30      # fixture-ease percentile at/below this => tough fixtures
+CHANCE_MIN_FIXTURE_SCORE = 40       # weighted fixture score (50 = average) below this => not a "chance"
+MOVE_ON_NEXT_FIXTURE_SWING = 5      # most engine points the NEXT game's difficulty can add or take off
+
 
 # Same-price replacement suggestion (engine score of the candidates, same position)
 REPLACEMENT_EXTRA_BUDGET = 0.0   # on top of the outgoing player's price (bank is not known)
@@ -98,10 +106,39 @@ TITLES = {
     "move_on": "Time to move on",
 }
 POSITION_PLURAL = {"GKP": "goalkeepers", "DEF": "defenders", "MID": "midfielders", "FWD": "forwards"}
+POSITION_SINGULAR = {"GKP": "goalkeeper", "DEF": "defender", "MID": "midfielder", "FWD": "forward"}
+_PLACEHOLDER_RE = re.compile(r"\{player_\d+\}")
 
 _EMPTY = {"minutes": 0.0, "points": 0.0, "xgi": 0.0, "xgc": 0.0, "dc": 0.0,
           "goals": 0.0, "assists": 0.0, "cs": 0.0}
 
+
+
+def _percentile_phrase(pct, plural):
+    """Percentile (0-100, 50 = average) in plain words. Wording is fixed by code, never by the LLM."""
+    if pct >= 67:
+        return f"among the top third of {plural}"
+    if pct >= 55:
+        return f"above the average for {plural}"
+    if pct <= 33:
+        return f"among the bottom third of {plural}"
+    if pct <= 45:
+        return f"below the average for {plural}"
+    return f"around the average for {plural}"
+
+
+def _points_note(actual_pct, singular):
+    """Short comparison of his points with his position, for the move-on text."""
+    if actual_pct > 55:
+        return f", above average for a {singular}"
+    if actual_pct >= 45:
+        return f", about average for a {singular}"
+    return f", below average for a {singular}"
+
+
+def _numbers(text):
+    """Numbers in a text, ignoring the digits inside the {player_<id>} placeholder."""
+    return set(_NUM_RE.findall(_PLACEHOLDER_RE.sub("", text)))
 
 # ---------------------------------------------------------------------------
 # Input parsing
@@ -296,15 +333,20 @@ def _get_population(position, window_ids):
 
 
 def _fixture_info(fixture_ctx, team_id):
-    """Upcoming fixtures for a team and how tough they are (ease percentile, lower = tougher)."""
+    """Upcoming fixtures for a team and how tough they are (ease percentile, lower = tougher).
+    weighted_score: next 3 games, the next game weighing double. next_score: the next game alone."""
+    empty = {"fixtures": [], "ease_pct": None, "hard": False, "weighted_score": None, "next_score": None}
     if not fixture_ctx:
-        return {"fixtures": [], "ease_pct": None, "hard": False}
+        return empty
     fixtures = fixture_ctx["info"].get(team_id, [])
     if not fixtures:  # blank gameweek: no signal here
-        return {"fixtures": [], "ease_pct": None, "hard": False}
+        return empty
     pct = _percentile(fixture_ctx["values"].get(team_id, 0.0), fixture_ctx["sorted_values"])
-    return {"fixtures": fixtures, "ease_pct": pct, "hard": pct <= HARD_FIXTURE_MAX_PCT}
-
+    return {
+        "fixtures": fixtures, "ease_pct": pct, "hard": pct <= HARD_FIXTURE_MAX_PCT,
+        "weighted_score": fixture_ctx.get("weighted_scores", {}).get(team_id),
+        "next_score": fixture_ctx.get("next_scores", {}).get(team_id),
+    }
 
 # ---------------------------------------------------------------------------
 # Evaluating players: percentile view (chance) + compare-engine view (move on)
@@ -421,13 +463,14 @@ def _collect_evals(players, gameweek, window_ids):
 
 
 def _is_chance(ev):
+    fixture_score = ev["fixture"].get("weighted_score")
     return (
         ev["mpg"] >= CHANCE_MIN_MPG
         and ev["availability"]["multiplier"] >= CHANCE_MIN_AVAILABILITY
         and ev["underlying"] >= CHANCE_MIN_UNDERLYING
         and ev["gap"] >= CHANCE_MIN_GAP
+        and (fixture_score is None or fixture_score >= CHANCE_MIN_FIXTURE_SCORE)   # NEW
     )
-
 
 def _slump_info(ev):
     """The single definition of "in a slump", shared by the website cards and the Telegram check:
@@ -444,6 +487,16 @@ def _slump_info(ev):
             "ppg": form["recent_points_per_game"], "earlier_ppg": earlier["ppg"], "drop": drop,
         }
     return None
+
+
+
+def _next_fixture_adjustment(ev):
+    """Engine points added (easy next game) or taken off (hard next game), at most +-SWING.
+    0 when his next game is unknown."""
+    score = ev["fixture"].get("next_score")
+    if score is None:
+        return 0.0
+    return MOVE_ON_NEXT_FIXTURE_SWING * max(-1.0, min(1.0, (score - 50) / 50))
 
 
 def _move_on_signal(ev):
@@ -463,8 +516,9 @@ def _move_on_signal(ev):
     slump = _slump_info(ev)
     if slump:
         return 70 + min(slump["drop"], 5.0), "slump"
-    if engine["score"] <= MOVE_ON_SCORE_MAX:
-        return 60 + (MOVE_ON_SCORE_MAX - engine["score"]) / MOVE_ON_SCORE_MAX * 9, "outlook"
+    adjusted = engine["score"] + _next_fixture_adjustment(ev)
+    if adjusted <= MOVE_ON_SCORE_MAX:
+        return 60 + min((MOVE_ON_SCORE_MAX - adjusted) / MOVE_ON_SCORE_MAX * 9, 9), "outlook"
     return None
 
 
@@ -473,14 +527,20 @@ def _classify(evals):
     chance = [e for e in evals if _is_chance(e)]
     best_chance = max(chance, key=lambda e: e["gap"]) if chance else None
 
-    best_move = None  # (severity, eval, kind)
+    candidates = []  # (severity, eval, kind)
     for e in evals:
         if e is best_chance:
             continue
         signal = _move_on_signal(e)
-        if signal and (best_move is None or signal[0] > best_move[0]):
-            best_move = (signal[0], e, signal[1])
-    return best_chance, ((best_move[1], best_move[2]) if best_move else None)
+        if signal:
+            candidates.append((signal[0], e, signal[1]))
+    if not candidates:
+        return best_chance, None
+
+    worst = max(candidates, key=lambda c: c[0])
+    close = [c for c in candidates if c[2] == worst[2] and c[0] >= worst[0] - MOVE_ON_PRICE_TOLERANCE]
+    pick = max(close, key=lambda c: (float(c[1]["player"].price), c[0]))
+    return best_chance, (pick[1], pick[2])
 
 
 def slump_stats(players, gameweek, window_ids):
@@ -534,7 +594,7 @@ def _replacement_window_profile(stats, eligible_gws, window_set, form_median):
 # ---------------------------------------------------------------------------
 def _replacement_pool(position, gameweek, window_ids, env):
     """Engine scores of every reliable, fit player of a position (cached, shared by all users)."""
-    cache_key = f"squad:pool:v2:{position}:{gameweek.fpl_id}:{window_ids[0]}:{SQUAD_HORIZON}"
+    cache_key = f"squad:pool:v3:{position}:{gameweek.fpl_id}:{window_ids[0]}:{SQUAD_HORIZON}"
     try:
         cached = redis_client.get(cache_key)
         if cached:
@@ -636,11 +696,13 @@ def _suggest_replacements(ev, squad_players, gameweek, window_ids, env, bank=Non
 TEMPLATES = {
     ("another_chance", "attack"): (
         "{name} has created {xgi:.1f} xGI over the last {n} gameweeks ({ga} goals and assists) "
-        "but returned just {pts} points. The chances are coming, so the returns are likely to follow."
+        "but returned just {pts} points. His chance creation ranks {under_label}, while his points "
+        "rank {pts_label}, so the returns are likely to follow."
     ),
     ("another_chance", "defence"): (
         "{name} has been solid at the back, conceding only {xgc:.1f} xGC over the last {n} gameweeks, "
-        "yet has just {cs} clean sheets and {pts} points. The underlying defence is better than the points show."
+        "yet has just {cs} clean sheets and {pts} points. His defensive numbers rank {under_label}, "
+        "so the points should catch up."
     ),
     ("move_on", "unavailable"): "{name} is not available ({news}). Consider a replacement.",
     ("move_on", "minutes"): (
@@ -651,7 +713,10 @@ TEMPLATES = {
         "{name} has returned just {recent_pts} points in his last {games} games "
         "({ppg:.1f} a game, against {earlier_ppg:.1f} a game earlier in the season).{slump_fixtures}"
     ),
-    ("move_on", "outlook"): "{name} could be worth replacing: {drivers}.",
+    ("move_on", "outlook"): (
+        "{name} has {recent_pts} points in his last {games} games ({ppg:.1f} a game{points_note}). "
+        "The case for moving on: {drivers}."
+    ),
 }
 
 SQUAD_REASON_SCHEMA = {
@@ -663,7 +728,7 @@ SQUAD_REASON_SCHEMA = {
             "reason": {
                 "type": "string",
                 "minLength": 1,
-                "description": "1-2 natural sentences. Refer to the player only via the given {player_<id>} placeholder.",
+                "description": "2-3 natural sentences. Refer to the player only via the given {player_<id>} placeholder.",
             }
         },
         "required": ["reason"],
@@ -692,7 +757,21 @@ def _slump_fixtures_text(ev):
     return f" His next fixtures are {listing}."
 
 
-def _drivers(ev, limit=2):
+def _underlying_sentence(ev, window_len):
+    """The xGI / xGC reason with the real number and an honest ranking. None when the window numbers
+    do not show a clearly below-average level (then the reason is left out instead of guessed)."""
+    pct = ev["underlying"]
+    if pct > DRIVER_MAX_SCORE:
+        return None
+    player, t = ev["player"], ev["totals"]
+    plural = POSITION_PLURAL.get(player.position, "players")
+    phrase = _percentile_phrase(pct, plural)
+    if player.position in ("MID", "FWD"):
+        return f"his {t['xgi']:.1f} xGI over the last {window_len} gameweeks ranks {phrase}"
+    return f"his defensive numbers ({t['xgc']:.1f} xGC in the last {window_len} gameweeks) rank {phrase}"
+
+
+def _drivers(ev, window_len, limit=2, skip_form=False):
     """Plain-English reasons (the axes that pull the engine score down most): no jargon, no raw scores."""
     player = ev["player"]
     rows = []
@@ -704,12 +783,13 @@ def _drivers(ev, limit=2):
         rows.append((weight * (score - 50), key, b))
     rows.sort(key=lambda r: r[0])
 
-    plural = POSITION_PLURAL.get(player.position, "players")
     parts, underlying_done = [], False
     for _, key, b in rows:
         if len(parts) >= limit:
             break
         if key == "form":
+            if skip_form:   # the move-on text already opens with his points
+                continue
             games = b.get("games") or 0
             parts.append(
                 f"he has only {b['recent_points']} points in his last {games} games"
@@ -724,11 +804,10 @@ def _drivers(ev, limit=2):
         elif key == "team_strength":
             parts.append(f"{player.team.short_name} have been out of form as a team")
         elif not underlying_done:  # xGI / xGC / DC / BPS axes all say the same thing to a fan
-            underlying_done = True
-            if player.position in ("MID", "FWD"):
-                parts.append(f"he is creating fewer chances than most {plural}")
-            else:
-                parts.append(f"he has been less solid at the back than most {plural}")
+            sentence = _underlying_sentence(ev, window_len)
+            if sentence:
+                underlying_done = True
+                parts.append(sentence)
     return " and ".join(parts) or "his outlook for the next few gameweeks is below average"
 
 
@@ -746,6 +825,14 @@ def _facts(ev, window_len):
         "mpg": ev["mpg"],
         "news": player.news or "injured or suspended",
     }
+
+    plural = POSITION_PLURAL.get(player.position, "players")
+    facts.update(
+        under_label=_percentile_phrase(ev["underlying"], plural),
+        pts_label=_percentile_phrase(ev["actual"], plural),
+        points_note=_points_note(ev["actual"], POSITION_SINGULAR.get(player.position, "player")),
+    )
+
     if ev.get("engine"):
         form = ev["engine"]["breakdown"]["form"]
         facts.update(
@@ -754,7 +841,7 @@ def _facts(ev, window_len):
             ppg=form["recent_points_per_game"],
             earlier_ppg=ev["earlier"]["ppg"] if ev.get("earlier") else 0.0,
             slump_fixtures=_slump_fixtures_text(ev),
-            drivers=_drivers(ev),
+            drivers=_drivers(ev, window_len, skip_form=True),
         )
     return facts
 
@@ -768,9 +855,9 @@ def _template_reason(title_key, kind, ev, window_len):
 
 
 def _rewrite_reason(base, lang):
-    """Optional LLM polish. Falls back to `base` on any problem, or if numbers change."""
+    """Optional LLM polish. Falls back to `base` on any problem, or if the numbers change."""
     digest = hashlib.sha1(f"{lang}|{base}".encode("utf-8")).hexdigest()
-    cache_key = f"squad:reason:v3:{digest}"
+    cache_key = f"squad:reason:v4:{digest}"
     try:
         cached = redis_client.get(cache_key)
         if cached:
@@ -779,14 +866,18 @@ def _rewrite_reason(base, lang):
         logger.warning("Reason cache read failed", exc_info=True)
 
     language_word = "Persian" if lang == "fa" else "English"
-    prompt = f"""Rewrite this Fantasy Premier League note in {language_word} as 1-2 natural, friendly sentences.
-Use ONLY the facts and numbers in the note, keep every number exactly as written (Latin digits),
-add nothing new, and keep the {{player_<id>}} placeholder exactly as written.
-Write for a casual fan: never mention FDR or ratings out of 100.
+    prompt = f"""You are a Fantasy Premier League analyst writing a short note for a casual fan.
+Rewrite the note below in {language_word} as 2-3 friendly, natural sentences.
+- Start with the main takeaway, then the reasons, then what it means for the fan.
+- Use ONLY the facts and numbers in the note and keep every number exactly as written (Latin digits).
+- Do not add any number, cause, comparison or prediction that the note does not state. If unsure, leave it out.
+- Keep the {{player_<id>}} placeholder exactly as written.
+- Friendly and plain, no hype, no emojis, no exclamation marks.
+- Never mention FDR or ratings out of 100.
 
 Note: {base}
 
-Respond ONLY with valid JSON: {{"reason": "<1-2 sentences>"}}"""
+Respond ONLY with valid JSON: {{"reason": "<2-3 sentences>"}}"""
     try:
         response = client.chat.completions.create(
             model="openai/gpt-oss-120b",
@@ -802,9 +893,17 @@ Respond ONLY with valid JSON: {{"reason": "<1-2 sentences>"}}"""
         logger.warning("Squad reason rewrite failed, using template", exc_info=True)
         return base
 
-    if not text or len(text) > 400 or set(_NUM_RE.findall(base)) - set(_NUM_RE.findall(text)):
+    placeholder = _PLACEHOLDER_RE.search(base)
+    if (
+        not text
+        or len(text) > 500
+        or (placeholder and placeholder.group(0) not in text)
+        or _numbers(base) != _numbers(text)   # nothing lost AND nothing invented
+    ):
+        logger.info("Reason rewrite rejected: base=%r out=%r", base, text)
         return base
 
+    logger.info("Reason rewrite ok: base=%r out=%r", base, text)
     try:
         redis_client.set(cache_key, text, ex=REASON_TTL)
     except Exception:
@@ -882,7 +981,7 @@ def get_squad_insights(team_input, lang="en"):
     slots, picks_name, pending, bank = _load_squad(team_id, gameweek)
 
     squad_key = hashlib.sha1(",".join(f"{k}:{v}" for k, v in sorted(slots.items())).encode()).hexdigest()[:12]
-    cache_key = f"squad:insights:v6:{team_id}:{squad_key}:{gameweek.fpl_id}:{lang}"
+    cache_key = f"squad:insights:v10:{team_id}:{squad_key}:{gameweek.fpl_id}:{lang}"
     try:
         cached = redis_client.get(cache_key)
         if cached:

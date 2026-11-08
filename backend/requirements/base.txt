@@ -10,3 +10,4 @@ groq
 django-cors-headers
 httpx[socks]
 requests[socks]>=2.32.0
+djangorestframework-simplejwt

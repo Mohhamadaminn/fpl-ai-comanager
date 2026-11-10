@@ -1,3 +1,4 @@
+import { useState } from "react";
 import {
   Radar, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis,
   ResponsiveContainer, Tooltip,
@@ -5,6 +6,23 @@ import {
 
 const COLOR_A = "var(--accent)";
 const COLOR_B = "#38bdf8";
+
+// Below this chart width the axis labels are wrapped onto two lines and the radar is drawn
+// smaller, so labels such as "Fixture Difficulty" are not cut off at the screen edge.
+const NARROW_CHART_PX = 440;
+
+function WrappedTick({ x, y, textAnchor, payload }) {
+  const words = String(payload.value).split(" ");
+  return (
+    <text x={x} y={y} textAnchor={textAnchor} fill="var(--text)" fontSize={12}>
+      {words.map((word, i) => (
+        <tspan key={i} x={x} dy={i === 0 ? `${0.35 - (words.length - 1) * 0.55}em` : "1.1em"}>
+          {word}
+        </tspan>
+      ))}
+    </text>
+  );
+}
 
 // Our own legend instead of recharts' <Legend />: recharts sorts legend items alphabetically by
 // default, so the names could end up in the opposite order to the stat table below. Here the order
@@ -31,6 +49,7 @@ function RadarLegend({ nameA, nameB }) {
 }
 
 function ComparisonRadar({ playerA, playerB }) {
+  const [narrow, setNarrow] = useState(false);
   const keys = Object.keys(playerA.breakdown);
 
   // Series use fixed keys instead of player names: names can collide (two players
@@ -48,10 +67,17 @@ function ComparisonRadar({ playerA, playerB }) {
 
   return (
     <>
-      <ResponsiveContainer width="100%" height={340}>
-        <RadarChart data={data}>
+      <ResponsiveContainer
+        width="100%"
+        height={340}
+        onResize={(width) => setNarrow(width < NARROW_CHART_PX)}
+      >
+        <RadarChart data={data} outerRadius={narrow ? "72%" : "80%"}>
           <PolarGrid stroke="var(--border)" />
-          <PolarAngleAxis dataKey="metric" tick={{ fill: "var(--text)", fontSize: 13 }} />
+          <PolarAngleAxis
+            dataKey="metric"
+            tick={narrow ? WrappedTick : { fill: "var(--text)", fontSize: 13 }}
+          />
           <PolarRadiusAxis angle={30} domain={[0, 100]} tick={false} axisLine={false} />
           <Radar
             name={nameA}

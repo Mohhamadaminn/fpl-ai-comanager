@@ -3,6 +3,7 @@ import { searchPlayers, getTeams } from "../api/compare";
 import CustomSelect from "./CustomSelect";
 import PlayerPhoto from "./PlayerPhoto";
 import { photoOf } from "../utils/photo";
+import { statusBadge } from "../utils/status";
 
 const POSITIONS = [
   { value: "", label: "All" },
@@ -21,28 +22,6 @@ const SORTS = [
   { value: "name", label: "Name" },
 ];
 
-const STATUS_BADGES = {
-  i: "Injured",
-  s: "Suspended",
-  u: "Unavailable",
-  n: "Not in squad",
-  d: "Doubtful",
-};
-
-function statusBadge(player) {
-  if (player.status && player.status !== "a") {
-    return {
-      label: STATUS_BADGES[player.status] || "Unavailable",
-      tone: player.status === "d" ? "doubtful" : "out",
-    };
-  }
-  const chance = player.chance_of_playing_next_round;
-  if (chance !== null && chance !== undefined && chance < 100) {
-    return { label: "Doubtful", tone: "doubtful" };
-  }
-  return null;
-}
-
 function PlayerPickerModal({ lockedPosition, excludeId, onSelect, onClose }) {
   const [search, setSearch] = useState("");
   const [position, setPosition] = useState(lockedPosition || "");
@@ -56,6 +35,15 @@ function PlayerPickerModal({ lockedPosition, excludeId, onSelect, onClose }) {
 
   useEffect(() => {
     getTeams().then(setTeams);
+  }, []);
+
+  // Keep the page behind the modal from scrolling on touch devices.
+  useEffect(() => {
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = previous;
+    };
   }, []);
 
   const fetchPlayers = useCallback((targetPage) => {
@@ -79,10 +67,16 @@ function PlayerPickerModal({ lockedPosition, excludeId, onSelect, onClose }) {
 
   return (
     <div className="picker-overlay" onClick={onClose}>
-      <div className="picker-modal" onClick={(e) => e.stopPropagation()}>
+      <div
+        className="picker-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Select a player"
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="picker-header">
           <h3>Select a Player</h3>
-          <button className="picker-close" onClick={onClose}>✕</button>
+          <button className="picker-close" aria-label="Close" onClick={onClose}>✕</button>
         </div>
 
         <input
@@ -111,7 +105,6 @@ function PlayerPickerModal({ lockedPosition, excludeId, onSelect, onClose }) {
           <CustomSelect
             value={team}
             onChange={setTeam}
-            align="right"
             options={[
               { value: "", label: "All Teams" },
               ...teams.map((t) => ({ value: t.id, label: t.short_name })),
@@ -121,7 +114,6 @@ function PlayerPickerModal({ lockedPosition, excludeId, onSelect, onClose }) {
           <CustomSelect
             value={sort}
             onChange={setSort}
-            align="left"
             options={SORTS}
           />
 

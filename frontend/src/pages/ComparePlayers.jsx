@@ -1,9 +1,11 @@
-import { useState } from "react";
+import { lazy, Suspense, useState } from "react";
 import PlayerSearchSelect from "../components/PlayerSearchSelect";
-import ComparisonRadar from "../components/ComparisonRadar";
 import SquadCheck from "../components/SquadCheck";
 import PlayerPhoto from "../components/PlayerPhoto";
 import { comparePlayers } from "../api/compare";
+
+// recharts is the bulk of the bundle and is only needed once a comparison is shown.
+const ComparisonRadar = lazy(() => import("../components/ComparisonRadar"));
 
 const HORIZONS = [1, 2, 3, 4, 5];
 
@@ -197,7 +199,9 @@ function ComparePlayers() {
           </p>
 
           <div className="compare-chart-wrap">
-            <ComparisonRadar playerA={entryA} playerB={entryB} />
+            <Suspense fallback={null}>
+              <ComparisonRadar playerA={entryA} playerB={entryB} />
+            </Suspense>
           </div>
 
           <div className="compare-stat-table">

@@ -2,28 +2,7 @@ import { useState } from "react";
 import PlayerPickerModal from "./PlayerPickerModal";
 import PlayerPhoto from "./PlayerPhoto";
 import { photoOf } from "../utils/photo";
-
-const STATUS_BADGES = {
-  i: "Injured",
-  s: "Suspended",
-  u: "Unavailable",
-  n: "Not in squad",
-  d: "Doubtful",
-};
-
-function statusBadge(player) {
-  if (player.status && player.status !== "a") {
-    return {
-      label: STATUS_BADGES[player.status] || "Unavailable",
-      tone: player.status === "d" ? "doubtful" : "out",
-    };
-  }
-  const chance = player.chance_of_playing_next_round;
-  if (chance !== null && chance !== undefined && chance < 100) {
-    return { label: "Doubtful", tone: "doubtful" };
-  }
-  return null;
-}
+import { statusBadge } from "../utils/status";
 
 function PlayerSearchSelect({ label, position, excludeId, value, onSelect }) {
   const [modalOpen, setModalOpen] = useState(false);

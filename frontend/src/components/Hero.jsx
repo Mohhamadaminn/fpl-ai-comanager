@@ -1,6 +1,4 @@
-function scrollTo(id) {
-  document.getElementById(id)?.scrollIntoView({ behavior: "smooth" });
-}
+import { scrollToId } from "../utils/scroll";
 
 function Hero() {
   return (
@@ -17,7 +15,7 @@ function Hero() {
 
           <button
             className="hero-cta"
-            onClick={() => scrollTo("compare")}
+            onClick={() => scrollToId("compare")}
           >
             Compare Players
           </button>

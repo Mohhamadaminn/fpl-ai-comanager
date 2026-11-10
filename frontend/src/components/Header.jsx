@@ -1,21 +1,18 @@
 import { useState } from "react";
-
-function scrollTo(id) {
-  document.getElementById(id)?.scrollIntoView({ behavior: "smooth" });
-}
+import { scrollToId } from "../utils/scroll";
 
 function Header() {
   const [menuOpen, setMenuOpen] = useState(false);
 
   const handleNavClick = (id) => {
     setMenuOpen(false);
-    scrollTo(id);
+    scrollToId(id);
   };
 
   return (
     <header className="site-header">
       <div className="site-header-inner">
-        <button className="site-logo" onClick={() => scrollTo("top")}>
+        <button className="site-logo" onClick={() => scrollToId("top")}>
           <span className="site-logo-mark">⚡</span> FPL Edge
         </button>
 

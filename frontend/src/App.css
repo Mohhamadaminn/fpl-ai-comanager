@@ -228,7 +228,6 @@
   justify-content: center;
 }
 
-.hero-visual-placeholder,
 .hero-haaland {
   width: 280px;
   height: 280px;
@@ -253,7 +252,6 @@
     max-width: 100%;
     text-align: center;
   }
-  .hero-visual-placeholder,
   .hero-haaland {
     width: 200px;
     height: 200px;
@@ -322,7 +320,9 @@
   flex-direction: column;
   gap: 8px;
   position: relative;
-  width: 300px;
+  flex: 0 1 300px;
+  min-width: 0;
+  max-width: 100%;
   text-align: left;
 }
 
@@ -381,20 +381,6 @@
   background: var(--accent-bg);
 }
 
-.player-select-chosen-avatar {
-  width: 42px;
-  height: 42px;
-  border-radius: 50%;
-  background: var(--accent);
-  color: #0b1420;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 13px;
-  font-weight: 700;
-  flex-shrink: 0;
-}
-
 .player-select-chosen-info {
   display: flex;
   flex-direction: column;
@@ -411,17 +397,6 @@
   color: var(--text);
   font-size: 12px;
 }
-
-@media (max-width: 720px) {
-  .player-select {
-    width: 100%;
-    max-width: 340px;
-  }
-  .compare-vs {
-    padding: 4px 0;
-  }
-}
-
 
 /* ---- Compare action ---- */
 
@@ -515,12 +490,6 @@
   animation: fadeInUp 0.5s ease both;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .compare-results.reveal {
-    animation: none;
-  }
-}
-
 @keyframes fadeInUp {
   from { opacity: 0; transform: translateY(12px); }
   to { opacity: 1; transform: translateY(0); }
@@ -538,18 +507,18 @@
 }
 
 .compare-cards {
-  display: flex;
-  gap: 20px;
-  justify-content: center;
-  flex-wrap: wrap;
-  margin-bottom: 36px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+  gap: 28px 20px;
+  max-width: 720px;
+  margin: 0 auto 36px;
 }
 
 .compare-card {
   border: 1px solid var(--border);
   border-radius: 16px;
   padding: 26px 30px;
-  min-width: 220px;
+  min-width: 0;
   position: relative;
   background: var(--bg);
   transition: transform 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
@@ -611,6 +580,7 @@
 
 .compare-chart-wrap {
   max-width: 500px;
+  min-height: 340px;
   margin: 0 auto 32px;
 }
 
@@ -705,6 +675,7 @@
   width: 100%;
   max-width: 480px;
   max-height: 80vh;
+  max-height: 80dvh;
   display: flex;
   flex-direction: column;
   padding: 22px;
@@ -786,15 +757,6 @@
   cursor: not-allowed;
 }
 
-.picker-filters select {
-  padding: 6px 8px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--code-bg);
-  color: var(--text-h);
-  font-size: 12px;
-}
-
 .picker-lock-note {
   font-size: 12px;
   color: var(--text);
@@ -803,6 +765,7 @@
 }
 
 .picker-list {
+  overscroll-behavior: contain;
   list-style: none;
   margin: 0;
   padding: 0;
@@ -825,20 +788,6 @@
 
 .picker-list li:hover {
   background: var(--accent-bg);
-}
-
-.picker-list-avatar {
-  width: 34px;
-  height: 34px;
-  border-radius: 50%;
-  background: var(--accent-bg);
-  color: var(--accent);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 12px;
-  font-weight: 700;
-  flex-shrink: 0;
 }
 
 .picker-list-info {
@@ -1037,13 +986,6 @@
   color: var(--accent);
 }
 
-.compare-card-warning {
-  margin-top: 14px;
-  font-size: 12px;
-  color: #fbbf24;
-  max-width: 240px;
-}
-
 .compare-close-note {
   color: var(--text);
   font-size: 13px;
@@ -1166,12 +1108,6 @@
   animation: fadeInUp 0.5s ease both;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .squad-results.reveal {
-    animation: none;
-  }
-}
-
 .squad-cards {
   display: flex;
   gap: 20px;
@@ -1279,7 +1215,7 @@
   background: var(--code-bg);
   border: 1px solid var(--border);
   padding: 4px 10px;
-  border-radius: 999px;
+  border-radius: 12px;
 }
 
 .player-status-badge {
@@ -1465,8 +1401,7 @@
 .cs-menu {
   position: absolute;
   top: calc(100% + 6px);
-  .cs-menu--right { right: 0; }
-  .cs-menu--left  { left: 0; }
+  left: 0;
   min-width: 100%;
   max-height: 240px;
   overflow-y: auto;
@@ -1574,12 +1509,6 @@
   background: var(--bg);
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .squad-replacement-list {
-    animation: none;
-  }
-}
-
 
 .player-select-chosen-photo {
   width: 48px;
@@ -1617,4 +1546,69 @@
   color: var(--accent);
   font-weight: 700;
   font-size: 12px;
+}
+
+
+/* ---- Phones (<= 480px) ---- */
+
+@media (max-width: 480px) {
+  .site-header { padding: 10px 20px; }
+  .site-nav { padding: 8px 20px; }
+
+  .hero { padding: 48px 20px 44px; }
+  .hero-content p { font-size: 16px; margin-bottom: 24px; }
+  .compare-page { padding: 48px 20px 64px; }
+  .compare-header p { margin-bottom: 32px; }
+  .telegram-promo { padding: 56px 20px; }
+  .site-footer { padding: 28px 20px; }
+
+  .compare-card { padding: 24px 18px; }
+  .compare-stat-value.left { padding-right: 10px; }
+  .compare-stat-value.right { padding-left: 10px; }
+  .compare-verdict { padding: 18px 18px; }
+
+  .squad-check { margin-top: 56px; padding-top: 40px; }
+  .squad-card { padding: 28px 18px 20px; }
+  .squad-form .compare-button { width: 100%; }
+
+  .picker-overlay { padding: 16px; }
+  .picker-modal { padding: 18px; }
+}
+
+
+/* ---- Touch devices: comfortable tap targets, and 16px inputs so iOS does not zoom in ---- */
+
+@media (pointer: coarse) {
+  .site-logo,
+  .site-nav button,
+  .site-nav-toggle,
+  .player-select-chosen button,
+  .compare-horizon-option,
+  .picker-tab,
+  .picker-close,
+  .picker-load-more,
+  .cs-trigger,
+  .squad-replacement-toggle {
+    min-height: 44px;
+  }
+
+  .site-nav-toggle,
+  .picker-close {
+    min-width: 44px;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .compare-horizon-option,
+  .player-select-chosen button,
+  .picker-tab { min-width: 44px; }
+
+  .site-footer-links a {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+  }
+
+  .squad-input,
+  .picker-search { font-size: 16px; }
 }

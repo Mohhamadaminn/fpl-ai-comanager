@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 
-function CustomSelect({ value, options, onChange, align = "right" }) {
+function CustomSelect({ value, options, onChange }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
 
@@ -37,7 +37,7 @@ function CustomSelect({ value, options, onChange, align = "right" }) {
       </button>
 
       {open && (
-        <ul className={`cs-menu cs-menu--${align}`} role="listbox">
+        <ul className="cs-menu" role="listbox">
           {options.map((o) => (
             <li
               key={o.value}

@@ -13,7 +13,7 @@ function Header() {
     <header className="site-header">
       <div className="site-header-inner">
         <button className="site-logo" onClick={() => scrollToId("top")}>
-          <span className="site-logo-mark">⚡</span> FPL Edge
+          <span className="site-logo-mark">⚡</span> FPL Vision
         </button>
 
         <nav className={`site-nav ${menuOpen ? "open" : ""}`}>

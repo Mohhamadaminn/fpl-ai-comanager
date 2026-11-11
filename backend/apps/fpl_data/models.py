@@ -87,6 +87,11 @@ class Fixture(models.Model):
     kickoff_time = models.DateTimeField(null=True, blank=True)
     finished = models.BooleanField(default=False)
 
+    # Real final score ('team_h_score' / 'team_a_score' from the FPL fixtures endpoint); None until the
+    # match is played or the fixtures are synced again. Includes own goals, unlike summing players' goals.
+    team_home_score = models.PositiveSmallIntegerField(null=True, blank=True)
+    team_away_score = models.PositiveSmallIntegerField(null=True, blank=True)
+
     def __str__(self):
         return f"{self.team_home.short_name} vs {self.team_away.short_name} (GW{self.gameweek_id})"
 

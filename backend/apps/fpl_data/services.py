@@ -154,6 +154,8 @@ def sync_fixtures():
                 "difficulty_away": fixture_data.get("team_a_difficulty"),
                 "kickoff_time": fixture_data.get("kickoff_time"),
                 "finished": fixture_data.get("finished", False),
+                "team_home_score": fixture_data.get("team_h_score"),
+                "team_away_score": fixture_data.get("team_a_score"),
             },
         )
 

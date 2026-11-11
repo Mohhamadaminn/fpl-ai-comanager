@@ -539,7 +539,7 @@ def _build_population(position, gameweek, window_ids):
 
 
 def _get_population(position, gameweek, window_ids):
-    key = f"compare:pop:v12:{position}:{gameweek.fpl_id}:{window_ids[0]}"
+    key = f"compare:pop:v13:{position}:{gameweek.fpl_id}:{window_ids[0]}"
     try:
         cached = redis_client.get(key)
         if cached:
@@ -563,8 +563,9 @@ def _team_gw_records(gameweek):
     """Per team, one record for every gameweek it actually played before `gameweek`, oldest first:
     {"matches", "xg", "xgc", "pts", "res_matches"}.
 
-    Results are derived from player goals (FPL no longer publishes team strengths), so only
-    single-match gameweeks give a result; xG / xGC are counted for every played match.
+    Results come from the real fixture score when it is synced (Fixture.team_home_score / team_away_score).
+    Until then they are derived from player goals, which misses own goals and only works for
+    single-match gameweeks; xG / xGC are counted for every played match.
     Blank or postponed gameweeks simply have no record, so "the last N records" of a team are
     its last N gameweeks it really played."""
     stats = {}  # (team_id, gw) -> goals, xg, xgc
@@ -601,11 +602,17 @@ def _team_gw_records(gameweek):
         rec_home, rec_away = record(home), record(away)
         rec_home["matches"] += 1
         rec_away["matches"] += 1
-        if per_gw_count[home] == 1 and per_gw_count[away] == 1:  # single-match gameweek: result is known
+        if f.team_home_score is not None and f.team_away_score is not None:
+            # Real score (own goals included), known for every fixture, double gameweeks too.
+            hg, ag = f.team_home_score, f.team_away_score
+        elif per_gw_count[home] == 1 and per_gw_count[away] == 1:
+            # Fallback while the real score is not synced yet: players' goals of a single-match gameweek.
             hg, ag = stats[home][0], stats[away][0]
-            for rec, gf, ga in ((rec_home, hg, ag), (rec_away, ag, hg)):
-                rec["pts"] += 3 if gf > ga else 1 if gf == ga else 0
-                rec["res_matches"] += 1
+        else:
+            continue  # result unknown
+        for rec, gf, ga in ((rec_home, hg, ag), (rec_away, ag, hg)):
+            rec["pts"] += 3 if gf > ga else 1 if gf == ga else 0
+            rec["res_matches"] += 1
 
     for key, rec in records.items():
         rec["xg"], rec["xgc"] = stats[key][1], stats[key][2]
@@ -854,10 +861,15 @@ def _dc_bonus(stats, population, position):
     avg = stats["last_dc"] / apps if apps else 0.0
     by_average = apps >= MID_DC_MIN_APPEARANCES and avg >= DC_AVG_MIN[position]
     by_hits = apps >= MID_DC_MIN_APPEARANCES and stats["last_dc_hits"] / apps >= MID_DC_HIT_SHARE
+    # The real percentile is always computed: it is what the radar / table show. Only the BONUS
+    # depends on a real DC threat, so a player without one is no longer drawn as a hard 0.
+    if apps:
+        rate = _shrunk_rate_capped(stats["last_dc"], stats["last_minutes"], population["medians"]["dc_recent"])
+        pct = _percentile(rate, population["metrics"]["dc_recent"])
+    else:
+        pct = 0.0
     if not (by_average or by_hits):
-        return {"active": False, "avg": avg, "pct": 0.0, "bonus": 0.0}
-    rate = _shrunk_rate_capped(stats["last_dc"], stats["last_minutes"], population["medians"]["dc_recent"])
-    pct = _percentile(rate, population["metrics"]["dc_recent"])
+        return {"active": False, "avg": avg, "pct": pct, "bonus": 0.0}
     strength = 1.0 if (by_average and by_hits) else 0.75
     return {"active": True, "avg": avg, "pct": pct,
             "bonus": round(DC_BONUS_MAX[position] * strength * pct / 100, 2)}
@@ -1176,8 +1188,9 @@ def compare_players(player_a_id: int, player_b_id: int, lang: str = "en", horizo
     entry_a = _score_player(player_a, agg, window_ids, population, fixture_ctx, ignore_minutes)
     entry_b = _score_player(player_b, agg, window_ids, population, fixture_ctx, ignore_minutes)
 
-    # Midfielders: if neither has a real DC threat, DC plays no part, so hide the axis.
-    if position == DC_BONUS_MAX and not any(e["breakdown"]["dc_recent"]["active"] for e in (entry_a, entry_b)):
+    # Midfielders and defenders: if neither has a real DC threat, DC plays no part, so hide the axis.
+    # (This used to compare the position string with the dict itself, so it never ran.)
+    if position in DC_BONUS_MAX and not any(e["breakdown"]["dc_recent"]["active"] for e in (entry_a, entry_b)):
         for e in (entry_a, entry_b):
             del e["breakdown"]["dc_recent"]
 

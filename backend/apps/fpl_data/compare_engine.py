@@ -56,9 +56,12 @@ TEAM_XG_SHARE = 0.3           # share of xG / xGC inside a team's rating; the re
 RECENT_WINDOW = 5            # finalized gameweeks used for playing time (minutes per gameweek, absences)
 RECENT_APPEARANCES = 5       # a player's "recent" stats = his last N games actually played, however long ago
 LOW_MINUTES_PER_APPEARANCE = 45   # below this he is mostly a substitute: shown to the user as a note
-RECENT_LOW_MINUTES_THRESHOLD = 45
-RECENT_LOW_MINUTES_APPS = 2
-RECENT_LOW_MINUTES_FACTOR = 0.62  # strong penalty when his last two games were both <=45 minutes
+RECENT_LOW_MINUTES_THRESHOLD = 45  # threshold for consecutive finalized gameweeks, including benchings
+RECENT_LOW_APPEARANCE_THRESHOLD = 60
+RECENT_LOW_APPEARANCES_WINDOW = 3
+RECENT_LOW_APPEARANCES_REQUIRED = 2
+RECENT_LOW_MINUTES_FACTOR = 0.62  # strong penalty for consecutive severe short appearances / gameweeks
+RECENT_ROTATION_FACTOR = 0.78    # moderate penalty for two short appearances among the last three
 # A single short (or missed) last game: lighter than the two-games penalty above. A game with 0 minutes
 # only counts while the player is fit (status "a") and his team really had a fixture that gameweek.
 LAST_GAME_LOW_MINUTES = 40
@@ -428,6 +431,30 @@ def _recent_game_minutes(stats, window_ids, status):
     while len(values) < 2:
         values.append(None)
     return values[0], values[1]
+
+
+def _has_repeated_short_appearances(minutes):
+    recent = minutes[:RECENT_LOW_APPEARANCES_WINDOW]
+    return sum(m < RECENT_LOW_APPEARANCE_THRESHOLD for m in recent) >= RECENT_LOW_APPEARANCES_REQUIRED
+
+
+def _recent_minutes_risk(appearance_minutes, latest_minutes, previous_minutes):
+    severe_short_appearances = (
+        len(appearance_minutes) >= 2
+        and all(m <= RECENT_LOW_MINUTES_THRESHOLD for m in appearance_minutes[:2])
+    )
+    two_low_games = (
+        latest_minutes is not None and previous_minutes is not None
+        and latest_minutes <= RECENT_LOW_MINUTES_THRESHOLD
+        and previous_minutes <= RECENT_LOW_MINUTES_THRESHOLD
+    )
+    if severe_short_appearances or two_low_games:
+        return "severe"
+    if _has_repeated_short_appearances(appearance_minutes):
+        return "rotation"
+    if latest_minutes is not None and latest_minutes < LAST_GAME_LOW_MINUTES:
+        return "single"
+    return None
 
 
 _EMPTY_AGG = {
@@ -1040,25 +1067,18 @@ def _score_player(player, agg, window_ids, population, fixture_ctx, ignore_minut
     # His last two finalized gameweeks, 0-minute games included (only while he is fit).
     recent_games = _recent_game_minutes(stats, window_ids, player.status)
     latest_minutes, previous_minutes = recent_games
-    recent_appearance_minutes = stats.get("last_appearance_minutes", [])[:RECENT_LOW_MINUTES_APPS]
-    two_low_appearances = (
-        len(recent_appearance_minutes) >= RECENT_LOW_MINUTES_APPS
-        and all(m <= RECENT_LOW_MINUTES_THRESHOLD for m in recent_appearance_minutes)
-    )
-    two_low_games = (
-        latest_minutes is not None and previous_minutes is not None
-        and latest_minutes <= RECENT_LOW_MINUTES_THRESHOLD and previous_minutes <= RECENT_LOW_MINUTES_THRESHOLD
-    )
-    low_minutes_recent = two_low_appearances or two_low_games
-    last_game_low = latest_minutes is not None and latest_minutes < LAST_GAME_LOW_MINUTES
-    # Repeated short appearances signal rotation/substitute risk (strong penalty); a single short or
-    # missed last game gets a lighter one. Neither is erased by the elite-score protection below;
+    recent_appearance_minutes = stats.get("last_appearance_minutes", [])
+    minutes_risk = _recent_minutes_risk(recent_appearance_minutes, latest_minutes, previous_minutes)
+    # Repeated short appearances signal rotation/substitute risk; a single short or missed last game
+    # gets a lighter penalty. These risks bypass elite-score protection below;
     # missed gameweeks due to injury remain handled separately.
-    if low_minutes_recent:
+    if minutes_risk == "severe":
         playing_factor = min(playing_factor, RECENT_LOW_MINUTES_FACTOR)
-    elif last_game_low:
+    elif minutes_risk == "rotation":
+        playing_factor = min(playing_factor, RECENT_ROTATION_FACTOR)
+    elif minutes_risk == "single":
         playing_factor = min(playing_factor, LAST_GAME_LOW_FACTOR)
-    sub_risk = low_minutes_recent or last_game_low
+    sub_risk = minutes_risk is not None
     scores_well = points_pct is not None and points_pct >= HIGH_POINTS_PCT
     if apply_elite_floor and not sub_risk and (base >= ELITE_BASE_SCORE or scores_well) and last_apps > 0:
         playing_factor = max(playing_factor, ELITE_MIN_FACTOR)

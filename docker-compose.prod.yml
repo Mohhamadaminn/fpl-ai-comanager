@@ -5,7 +5,9 @@ services:
       dockerfile: Dockerfile.prod
     command: sh -c "python manage.py migrate --noinput && gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 3"
     env_file: .env
-    ports:
+    # Reachable only from other services on the compose network (nginx in `web`),
+    # never published on the host.
+    expose:
       - "8000"
     depends_on:
       db:
@@ -14,16 +16,15 @@ services:
         condition: service_started
     restart: unless-stopped
 
-
-    web:
-      build:
-        context: ./frontend
-        dockerfile: Dockerfile.prod
-      ports:
-        - "80:80"
-      depends_on:
-        - backend
-      restart: unless-stopped
+  web:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.prod
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
 
   db:
     image: postgres:17-alpine

@@ -5,6 +5,7 @@ from .models import Player, Team
 from .serializers import PlayerListSerializer, TeamListSerializer, ComparePlayersRequestSerializer, SquadInsightsRequestSerializer
 from .squad_insights import get_squad_insights
 from .compare_engine import compare_players
+from .throttles import LLMBurstThrottle, LLMDailyThrottle
 
 
 SORT_FIELDS = {
@@ -57,6 +58,8 @@ class TeamListView(APIView):
 
 
 class ComparePlayersView(APIView):
+    throttle_classes = [LLMBurstThrottle, LLMDailyThrottle]
+
     def post(self, request):
         req = ComparePlayersRequestSerializer(data=request.data)
         req.is_valid(raise_exception=True)
@@ -76,6 +79,8 @@ class ComparePlayersView(APIView):
 
 
 class SquadInsightsView(APIView):
+    throttle_classes = [LLMBurstThrottle, LLMDailyThrottle]
+
     def post(self, request):
         req = SquadInsightsRequestSerializer(data=request.data)
         req.is_valid(raise_exception=True)

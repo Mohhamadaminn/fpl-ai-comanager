@@ -164,15 +164,56 @@ STATIC_ROOT = BASE_DIR / 'staticfiles'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 
+# Cache: shared by all gunicorn workers so DRF throttle counters are consistent
+# and survive restarts. Uses its own Redis database (not the Celery broker's).
+# REDIS_CACHE_URL wins; otherwise it is derived from CELERY_BROKER_URL with the
+# database index switched to 1; with neither set (tests, plain local runs) an
+# in-process cache is used.
+def _redis_cache_url():
+    explicit = os.environ.get('REDIS_CACHE_URL')
+    if explicit:
+        return explicit
+    broker = os.environ.get('CELERY_BROKER_URL')
+    if broker and broker.startswith(('redis://', 'rediss://')):
+        base, sep, tail = broker.rpartition('/')
+        if sep and tail.isdigit():
+            return f'{base}/1'
+        return broker.rstrip('/') + '/1'
+    return None
+
+
+_CACHE_URL = _redis_cache_url()
+if _CACHE_URL:
+    CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.backends.redis.RedisCache',
+            'LOCATION': _CACHE_URL,
+            'KEY_PREFIX': 'fplai',
+            'OPTIONS': {'socket_connect_timeout': 2, 'socket_timeout': 2},
+        }
+    }
+else:
+    CACHES = {
+        'default': {'BACKEND': 'django.core.cache.backends.locmem.LocMemCache'}
+    }
+
+
 REST_FRAMEWORK = {
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.LimitOffsetPagination',
     'PAGE_SIZE': 20,
     'DEFAULT_AUTHENTICATION_CLASSES': [
         'rest_framework_simplejwt.authentication.JWTAuthentication',
     ],
+    # Number of reverse proxies in front of Django (the nginx `web` service = 1).
+    # DRF then takes the client IP from the Nth-from-last X-Forwarded-For entry
+    # instead of trusting the whole, client-controllable header.
+    'NUM_PROXIES': int(os.environ.get('NUM_PROXIES', '1')),
     'DEFAULT_THROTTLE_RATES': {
         'register': '10/hour',
         'login': '10/minute',
+        # Per-IP limits for endpoints that can trigger Groq and FPL API calls.
+        'llm_burst': os.environ.get('LLM_THROTTLE_BURST', '10/minute'),
+        'llm_daily': os.environ.get('LLM_THROTTLE_DAILY', '200/day'),
     },
 }
 

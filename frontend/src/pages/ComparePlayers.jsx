@@ -251,15 +251,15 @@ function ComparePlayers() {
                 );
               })}
               {(() => {
-                const sa = entryA.season_points;
-                const sb = entryB.season_points;
+                const sa = entryA.breakdown.form?.season_points_per_game;
+                const sb = entryB.breakdown.form?.season_points_per_game;
                 if (sa == null || sb == null) return null;
                 const better = sa === sb ? null : sa > sb ? "a" : "b";
                 return (
                   <div className="compare-stat-row">
-                    <span className={`compare-stat-value left ${better === "a" ? "compare-better-a" : ""}`}>{sa}</span>
-                    <span className="compare-stat-label">Season points</span>
-                    <span className={`compare-stat-value right ${better === "b" ? "compare-better-b" : ""}`}>{sb}</span>
+                    <span className={`compare-stat-value left ${better === "a" ? "compare-better-a" : ""}`}>{sa.toFixed(1)}</span>
+                    <span className="compare-stat-label">Season points / appearance</span>
+                    <span className={`compare-stat-value right ${better === "b" ? "compare-better-b" : ""}`}>{sb.toFixed(1)}</span>
                   </div>
                 );
               })()}

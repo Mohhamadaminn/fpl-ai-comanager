@@ -966,6 +966,15 @@
   opacity: 0.6;
 }
 
+.site-footer-disclaimer {
+  color: var(--text);
+  font-size: 11px;
+  line-height: 1.6;
+  opacity: 0.5;
+  max-width: 640px;
+  margin: 10px auto 0;
+}
+
 
 /* ---- Compare: availability + close call ---- */
 
@@ -990,6 +999,12 @@
   color: var(--text);
   font-size: 13px;
   margin: -12px 0 12px;
+}
+
+.compare-score-explain {
+  color: var(--text);
+  font-size: 13px;
+  margin: 0 0 10px;
 }
 
 .compare-score-note {

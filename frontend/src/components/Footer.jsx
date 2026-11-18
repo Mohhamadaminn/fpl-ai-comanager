@@ -36,6 +36,14 @@ function Footer() {
         <p className="site-footer-sub">
           Not affiliated with the Premier League or Fantasy Premier League.
         </p>
+
+        <p className="site-footer-disclaimer">
+          FPL Vision is an independent, unofficial project. It is not affiliated with, endorsed
+          by or connected to the Premier League, Fantasy Premier League or any club or player.
+          All names, logos, player photos and trademarks belong to their respective owners.
+          Data comes from the official FPL API. Scores and AI-written verdicts are for
+          information only; they can be wrong and do not guarantee FPL results.
+        </p>
       </div>
     </footer>
   );

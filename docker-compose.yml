@@ -102,6 +102,9 @@ services:
   
 
   bot:
+    # Telegram bot is disabled for now: services with a profile are skipped by a plain
+    # `docker compose up`. To run it: docker compose --profile telegram up bot
+    profiles: ["telegram"]
     build:
       context: ./backend
       dockerfile: Dockerfile

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { scrollToId } from "../utils/scroll";
+import { TELEGRAM_BOT_URL } from "../config/links";
 
 function Header() {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -19,7 +20,10 @@ function Header() {
         <nav className={`site-nav ${menuOpen ? "open" : ""}`}>
           <button onClick={() => handleNavClick("top")}>Home</button>
           <button onClick={() => handleNavClick("compare")}>Player Comparison</button>
-          <button onClick={() => handleNavClick("telegram")}>Telegram Bot</button>
+          {/* Hidden while the Telegram bot is disabled; shows again once TELEGRAM_BOT_URL is set. */}
+          {TELEGRAM_BOT_URL && (
+            <button onClick={() => handleNavClick("telegram")}>Telegram Bot</button>
+          )}
         </nav>
 
         <button

@@ -16,6 +16,14 @@ function horizonLabel(n) {
   return n === 1 ? "Next gameweek" : `Next ${n} gameweeks`;
 }
 
+// Scores are shown as whole numbers, so the gap is worked out from the displayed numbers:
+// what the user reads on the cards always matches what the note says.
+function closeCallText(scoreA, scoreB) {
+  const gap = Math.abs(Math.round(scoreA) - Math.round(scoreB));
+  if (gap === 0) return "Too close to call: both players have the same score.";
+  return `Too close to call: the scores are only ${gap} ${gap === 1 ? "point" : "points"} apart.`;
+}
+
 function fixturesLine(fixtures) {
   if (!fixtures || fixtures.length === 0) return "No fixture";
   return fixtures
@@ -175,7 +183,7 @@ function ComparePlayers() {
                     </span>
                   )}
                   <div className="compare-score">
-                    <span className="compare-score-value">{entry.score}</span>
+                    <span className="compare-score-value">{Math.round(entry.score)}</span>
                     <span className="compare-score-label">score</span>
                   </div>
                   <p className="compare-card-fixtures">{fixturesLine(entry.fixtures)}</p>
@@ -187,9 +195,15 @@ function ComparePlayers() {
 
           {result.close_call && (
             <p className="compare-close-note">
-              Too close to call: the scores are only {result.margin} points apart.
+              {closeCallText(entryA.score, entryB.score)}
             </p>
           )}
+
+          <p className="compare-score-explain">
+            Score is a 0-100 rating of how strong each player looks over the gameweeks ahead,
+            compared with other players in the same position. Higher is better; the gap between
+            the two is what counts.
+          </p>
 
           <p className="compare-score-note">
             Scores reflect performance only: form (recent games, big scores and the season),

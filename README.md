@@ -151,7 +151,12 @@ This runs the main services:
 - Redis
 - Celery worker
 - Celery beat
-- Telegram bot
+
+The Telegram bot service is currently disabled by default (it uses a Compose profile, no code was removed). To run it:
+
+```bash
+docker compose --profile telegram up bot
+```
 
 ### Option 2: Local development
 

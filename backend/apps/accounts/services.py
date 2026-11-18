@@ -11,7 +11,9 @@ FPL_BASE_URL = "https://fantasy.premierleague.com/api"
 
 def get_current_squad(fpl_team_id: int, gameweek_fpl_id: int):
     """Returns the list of Player objects currently in the manager's squad for a gameweek."""
-    response = requests.get(f"{FPL_BASE_URL}/entry/{fpl_team_id}/event/{gameweek_fpl_id}/picks/")
+    response = requests.get(
+        f"{FPL_BASE_URL}/entry/{fpl_team_id}/event/{gameweek_fpl_id}/picks/", timeout=(5, 20)
+    )
     response.raise_for_status()
     data = response.json()
 

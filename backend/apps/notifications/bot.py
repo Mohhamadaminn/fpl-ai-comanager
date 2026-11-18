@@ -15,11 +15,32 @@ from telegram.ext import (
 )
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.db import close_old_connections
 from apps.accounts.models import FPLManagerProfile
 
 
 User = get_user_model()
 logger = logging.getLogger(__name__)
+
+
+def db_sync(func):
+    """Run a blocking function (ORM / HTTP) off the event loop, safely and in parallel.
+
+    * thread_sensitive=False: the default (True) funnels every call through ONE thread, so a
+      single slow FPL request would freeze every other user of the bot.
+    * close_old_connections() before and after: this process is long-lived and not driven by
+      Django's request cycle, so stale or dropped Postgres connections would otherwise never
+      be recycled and handlers would start failing after the first DB restart/idle timeout.
+    """
+    def wrapped(*args, **kwargs):
+        close_old_connections()
+        try:
+            return func(*args, **kwargs)
+        finally:
+            close_old_connections()
+
+    return sync_to_async(wrapped, thread_sensitive=False)
+
 
 WAITING_FOR_TEAM_LINK = 1
 TEAM_ID_PATTERN = re.compile(r"entry/(\d+)")
@@ -38,7 +59,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from apps.accounts.services import get_or_create_profile_for_chat
     from apps.notifications.translations import t
 
-    profile = await sync_to_async(get_or_create_profile_for_chat)(update.effective_chat.id)
+    profile = await db_sync(get_or_create_profile_for_chat)(update.effective_chat.id)
     await update.message.reply_text(t("welcome", profile.preferred_language))
 
     
@@ -51,7 +72,7 @@ async def fixtures(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from apps.accounts.services import get_manager_gameweek_state
     from apps.notifications.translations import t
 
-    profile = await sync_to_async(
+    profile = await db_sync(
         lambda: FPLManagerProfile.objects.filter(telegram_chat_id=update.effective_chat.id).first()
     )()
 
@@ -61,7 +82,7 @@ async def fixtures(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(t("no_team_linked", lang))
         return
 
-    gw = await sync_to_async(lambda: Gameweek.objects.filter(is_current=True).first())()
+    gw = await db_sync(lambda: Gameweek.objects.filter(is_current=True).first())()
     if not gw:
         await update.message.reply_text(t("no_current_gameweek", lang))
         return
@@ -102,7 +123,7 @@ async def fixtures(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         return lines
 
-    lines = await sync_to_async(_get_fixtures)()
+    lines = await db_sync(_get_fixtures)()
 
     message = f"📅 *{t('fixtures_title', lang)}*\n\n" + "\n".join(lines)
     message = enforce_rtl(message, lang)
@@ -114,7 +135,7 @@ async def myteam(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from apps.accounts.services import get_manager_gameweek_state
     from apps.notifications.translations import t
 
-    profile = await sync_to_async(
+    profile = await db_sync(
         lambda: FPLManagerProfile.objects.filter(
             telegram_chat_id=update.effective_chat.id
         ).first()
@@ -126,7 +147,7 @@ async def myteam(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(t("no_team_linked", lang))
         return
 
-    gw = await sync_to_async(
+    gw = await db_sync(
         lambda: Gameweek.objects.filter(is_current=True).first()
     )()
 
@@ -239,7 +260,7 @@ async def myteam(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         return sections, total_points
 
-    sections, total_points = await sync_to_async(_get_team_points)()
+    sections, total_points = await db_sync(_get_team_points)()
 
     message = (
         f"⚽ *{t('your_team_title', lang)} — {gw.name}*\n\n"
@@ -260,12 +281,12 @@ async def prediction(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from apps.predictions.tasks import generate_prediction_task
     from apps.notifications.translations import t
 
-    gw = await sync_to_async(lambda: Gameweek.objects.filter(is_current=True).first())()
+    gw = await db_sync(lambda: Gameweek.objects.filter(is_current=True).first())()
     if not gw:
         await update.message.reply_text(t("no_current_gameweek", "en"))
         return
 
-    profile = await sync_to_async(
+    profile = await db_sync(
         lambda: FPLManagerProfile.objects.filter(telegram_chat_id=update.effective_chat.id).first()
     )()
     if not profile or not profile.fpl_team_id:
@@ -275,7 +296,7 @@ async def prediction(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = profile.preferred_language
     await update.message.reply_text(t("prediction_pending", lang))
 
-    await sync_to_async(generate_prediction_task.delay)(
+    await db_sync(generate_prediction_task.delay)(
         profile.user_id, gw.id, profile.fpl_team_id, update.effective_chat.id, lang
     )
 
@@ -285,7 +306,7 @@ async def setteamid_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from apps.accounts.services import get_or_create_profile_for_chat
     from apps.notifications.translations import t
 
-    profile = await sync_to_async(get_or_create_profile_for_chat)(update.effective_chat.id)
+    profile = await db_sync(get_or_create_profile_for_chat)(update.effective_chat.id)
     await update.message.reply_text(t("setteamid_prompt", profile.preferred_language))
     return WAITING_FOR_TEAM_LINK
 
@@ -305,7 +326,7 @@ async def setteamid_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
         profile.save(update_fields=["fpl_team_id"])
         return profile.preferred_language, "ok"
 
-    lang, result = await sync_to_async(_save)()
+    lang, result = await db_sync(_save)()
 
     if result == "not_found":
         await update.message.reply_text(t("team_id_not_found", lang))
@@ -319,7 +340,7 @@ async def setteamid_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from apps.accounts.services import get_or_create_profile_for_chat
     from apps.notifications.translations import t
 
-    profile = await sync_to_async(get_or_create_profile_for_chat)(update.effective_chat.id)
+    profile = await db_sync(get_or_create_profile_for_chat)(update.effective_chat.id)
     await update.message.reply_text(t("cancelled", profile.preferred_language))
     return ConversationHandler.END
 
@@ -338,7 +359,7 @@ async def my_team_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from apps.accounts.models import FPLManagerProfile
     from apps.notifications.translations import t
 
-    profile = await sync_to_async(
+    profile = await db_sync(
         lambda: FPLManagerProfile.objects.filter(telegram_chat_id=update.effective_chat.id).first()
     )()
     lang = profile.preferred_language if profile else "en"
@@ -355,13 +376,13 @@ async def differentials(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from apps.accounts.models import FPLManagerProfile
     from apps.notifications.translations import t
 
-    profile = await sync_to_async(
+    profile = await db_sync(
         lambda: FPLManagerProfile.objects.filter(telegram_chat_id=update.effective_chat.id).first()
     )()
     lang = profile.preferred_language if profile else "en"
 
     await update.message.reply_text(t("differentials_searching", lang))
-    await sync_to_async(generate_differentials_task.delay)(update.effective_chat.id, lang)
+    await db_sync(generate_differentials_task.delay)(update.effective_chat.id, lang)
 
 
 
@@ -371,12 +392,12 @@ async def performance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from apps.accounts.models import FPLManagerProfile
     from apps.notifications.translations import t
 
-    profile = await sync_to_async(
+    profile = await db_sync(
         lambda: FPLManagerProfile.objects.filter(telegram_chat_id=update.effective_chat.id).first()
     )()
     lang = profile.preferred_language if profile else "en"
 
-    rate_limit_error = await sync_to_async(check_rate_limit)(update.effective_chat.id)
+    rate_limit_error = await db_sync(check_rate_limit)(update.effective_chat.id)
     if rate_limit_error:
         await update.message.reply_text(t(rate_limit_error, lang))  # see note below
         return
@@ -385,13 +406,13 @@ async def performance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(t("no_team_linked", lang))
         return
 
-    gw = await sync_to_async(get_last_finished_gameweek)()
+    gw = await db_sync(get_last_finished_gameweek)()
     if not gw:
         await update.message.reply_text(t("no_finished_gameweek", lang))
         return
 
     await update.message.reply_text(t("crunching_numbers", lang))
-    await sync_to_async(generate_performance_task.delay)(
+    await db_sync(generate_performance_task.delay)(
         profile.fpl_team_id, gw.id, update.effective_chat.id, lang
     )
 
@@ -417,7 +438,7 @@ async def language_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         profile.preferred_language = lang
         profile.save(update_fields=["preferred_language"])
 
-    await sync_to_async(_save)()
+    await db_sync(_save)()
     await query.answer()
     confirm = "Language set to English ✅" if lang == "en" else "زبان به فارسی تغییر کرد ✅"
     await query.edit_message_text(confirm)
@@ -436,7 +457,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         gw = Gameweek.objects.filter(is_current=True).first() or Gameweek.objects.filter(is_next=True).first()
         return profile, gw
 
-    profile, gw = await sync_to_async(_get_data)()
+    profile, gw = await db_sync(_get_data)()
 
     lang = profile.preferred_language if profile else "en"
 
@@ -470,7 +491,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from apps.accounts.models import FPLManagerProfile
     from apps.notifications.translations import t
 
-    profile = await sync_to_async(
+    profile = await db_sync(
         lambda: FPLManagerProfile.objects.filter(telegram_chat_id=update.effective_chat.id).first()
     )()
     lang = profile.preferred_language if profile else "en"
@@ -512,7 +533,13 @@ async def set_bot_commands(application: Application):
     await application.bot.set_my_commands(fa_commands, language_code="fa")
 
 def build_application():
-    application = Application.builder().token(settings.TELEGRAM_BOT_TOKEN).post_init(set_bot_commands).build()
+    application = (
+        Application.builder()
+        .token(settings.TELEGRAM_BOT_TOKEN)
+        .post_init(set_bot_commands)
+        .concurrent_updates(settings.BOT_CONCURRENT_UPDATES)
+        .build()
+    )
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("fixtures", fixtures))
     application.add_handler(CommandHandler("myteam", myteam))

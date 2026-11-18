@@ -1,5 +1,6 @@
 from celery import shared_task
 import asyncio
+import requests
 from telegram import Bot
 import logging
 from django.conf import settings
@@ -7,8 +8,18 @@ from .services import sync_bootstrap_data, sync_live_gameweek_stats, sync_fixtur
 from .models import Gameweek
 
 
+# The FPL API regularly errors or times out (especially while it updates after a gameweek).
+# Retry network failures with exponential backoff instead of waiting for the next schedule slot.
+FPL_SYNC_RETRY = {
+    "autoretry_for": (requests.RequestException,),
+    "retry_backoff": 30,
+    "retry_backoff_max": 600,
+    "retry_jitter": True,
+    "max_retries": 3,
+}
 
-@shared_task
+
+@shared_task(**FPL_SYNC_RETRY)
 def sync_bootstrap_task():
     sync_bootstrap_data()
 
@@ -20,7 +31,7 @@ def sync_live_stats_task():
         sync_live_gameweek_stats(current_gw.fpl_id)
 
 
-@shared_task
+@shared_task(**FPL_SYNC_RETRY)
 def sync_fixtures_task():
     sync_fixtures()
 

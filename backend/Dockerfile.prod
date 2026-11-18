@@ -10,13 +10,11 @@ RUN pip install --no-cache-dir -r requirements/prod.txt
 
 COPY . .
 
-# collectstatic موقع build اجرا می‌شه؛ SECRET_KEY فقط برای همین مرحله‌ست و داخل ایمیج نمی‌مونه
 RUN SECRET_KEY=build-only python manage.py collectstatic --noinput
 
-# اجرا با کاربر غیر root
 RUN useradd -m appuser && chown -R appuser /app
 USER appuser
 
 EXPOSE 8000
 
-CMD ["gunicorn", "config.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "3"]
+CMD ["gunicorn", "config.wsgi:application", "-c", "gunicorn.conf.py"]

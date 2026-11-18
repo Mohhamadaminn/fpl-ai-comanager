@@ -2,9 +2,9 @@ import hashlib
 import json
 
 from django.db import models
-from groq import Groq
 from django.conf import settings
 
+from apps.fpl_data.llm import make_groq_client
 from apps.fpl_data.models import (
     Player,
     PlayerGameweekStat,
@@ -90,7 +90,7 @@ DIFFERENTIALS_RESPONSE_SCHEMA = {
 }
 
 
-client = Groq(api_key=settings.GROQ_API_KEY)
+client = make_groq_client()
 
 
 # ---------------------------------------------------------------------------

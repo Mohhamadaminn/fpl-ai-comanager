@@ -234,6 +234,21 @@ CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
 CELERY_BEAT_SCHEDULER = 'django_celery_beat.schedulers:DatabaseScheduler'
 
+# A stuck HTTP call (FPL, Groq, Telegram) must never hold a worker slot forever.
+# Soft limit raises SoftTimeLimitExceeded inside the task; the hard limit kills it.
+# Long fan-out tasks (reminders, weekly health) override these on the task itself.
+CELERY_TASK_SOFT_TIME_LIMIT = int(os.environ.get('CELERY_TASK_SOFT_TIME_LIMIT', '600'))
+CELERY_TASK_TIME_LIMIT = int(os.environ.get('CELERY_TASK_TIME_LIMIT', '660'))
+
+# Groq client limits. Worst case for one request is roughly
+# (1 + GROQ_MAX_RETRIES) * GROQ_TIMEOUT_SECONDS per attempt; the player comparison
+# makes up to 2 attempts, so keep the gunicorn/nginx timeouts above ~2x that.
+GROQ_TIMEOUT_SECONDS = float(os.environ.get('GROQ_TIMEOUT_SECONDS', '20'))
+GROQ_MAX_RETRIES = int(os.environ.get('GROQ_MAX_RETRIES', '1'))
+
+# How many Telegram updates the bot processes at the same time.
+BOT_CONCURRENT_UPDATES = int(os.environ.get('BOT_CONCURRENT_UPDATES', '8'))
+
 
 CELERY_BEAT_SCHEDULE = {
     "sync-fpl-bootstrap": {

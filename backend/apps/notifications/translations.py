@@ -44,6 +44,15 @@ TRANSLATIONS = {
         "en": "Sorry, I couldn't generate your performance report right now. Please try again in a few minutes.",
         "fa": "متاسفم، الان نتونستم گزارش عملکرد رو تولید کنم. چند دقیقه دیگه دوباره امتحان کن.",
     },
+    # --- failure notices for /prediction and /differentials ---
+    "prediction_failed": {
+        "en": "Sorry, I couldn't generate your prediction right now. Please try again in a few minutes.",
+        "fa": "متاسفم، الان نتونستم پیش‌بینی رو تولید کنم. چند دقیقه دیگه دوباره امتحان کن.",
+    },
+    "differentials_failed": {
+        "en": "Sorry, I couldn't find differentials right now. Please try again in a few minutes.",
+        "fa": "متاسفم، الان نتونستم بازیکنان کم‌انتخاب رو پیدا کنم. چند دقیقه دیگه دوباره امتحان کن.",
+    },
     "overperformed": {"en": "Overperformed", "fa": "بهتر از حد انتظار"},
     "underperformed": {"en": "Underperformed", "fa": "بدتر از حد انتظار"},
     "verdict_over": {"en": "Overperform", "fa": "فراتر از انتظار"},

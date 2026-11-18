@@ -6,12 +6,14 @@ import redis
 import bisect, json, logging, statistics
 from django.db import transaction
 from django.db.models import Count, Q, Sum
-from groq import Groq
 from django.conf import settings
 from decimal import Decimal
+from .llm import make_groq_client
 from .models import Team, Player, Gameweek, Fixture, PlayerGameweekStat
 
 FPL_BASE_URL = "https://fantasy.premierleague.com/api"
+# (connect, read) seconds for calls to the FPL API, so a stalled connection can't hang a worker.
+FPL_TIMEOUT = (5, 20)
 
 
 STAT_UPDATE_FIELDS = [
@@ -47,7 +49,7 @@ PERFORMANCE_BLURB_SCHEMA = {
     },
 }
 
-client = Groq(api_key=settings.GROQ_API_KEY)
+client = make_groq_client()
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +66,7 @@ def enforce_rtl(text: str, lang: str) -> str:
 
 
 def sync_bootstrap_data():
-    response = requests.get(f"{FPL_BASE_URL}/bootstrap-static/")
+    response = requests.get(f"{FPL_BASE_URL}/bootstrap-static/", timeout=FPL_TIMEOUT)
     response.raise_for_status()
     data = response.json()
 
@@ -132,7 +134,7 @@ def sync_bootstrap_data():
 
 
 def sync_fixtures():
-    response = requests.get(f"{FPL_BASE_URL}/fixtures/")
+    response = requests.get(f"{FPL_BASE_URL}/fixtures/", timeout=FPL_TIMEOUT)
     response.raise_for_status()
     data = response.json()
 

@@ -3,7 +3,9 @@ import logging
 from datetime import timedelta
 
 from celery import shared_task
+from celery.exceptions import SoftTimeLimitExceeded
 from django.conf import settings
+from django.core.cache import cache
 from django.utils import timezone
 from telegram import Bot
 
@@ -30,7 +32,47 @@ logger = logging.getLogger(__name__)
 
 
 
-@shared_task
+# The reminder runs every 30 minutes inside the 24h window before the deadline. These
+# limits make a run safe to repeat, overlap or cut short without messaging anyone twice.
+REMINDER_TASK_SOFT_LIMIT = 1500   # seconds; well under the 30-minute beat interval
+REMINDER_TASK_HARD_LIMIT = 1620
+REMINDER_LOCK_TTL = REMINDER_TASK_HARD_LIMIT + 120  # lock outlives a killed task, then expires
+REMINDER_STATE_TTL = 3 * 24 * 3600
+REMINDER_MAX_ATTEMPTS = 3  # per user and gameweek, so a blocked bot can't cost Groq calls forever
+
+
+def _send_reminder(profile, gw):
+    lang = profile.preferred_language
+    sync_free_transfers(profile)
+    manager_state = get_manager_gameweek_state(profile.fpl_team_id, gw.fpl_id)
+    manager_state["free_transfers"] = profile.free_transfers
+    pred = generate_ai_prediction(
+        gw, manager_state["squad"], manager_state, user=profile.user, lang=lang
+    )
+
+    hold_reason = pred.data_snapshot.get("hold_reason") if pred.data_snapshot else None
+    hit_cost = pred.data_snapshot.get("hit_cost", 0) if pred.data_snapshot else 0
+    hit_note = f" (⚠️ -{hit_cost} pts hit)" if hit_cost else ""
+
+    transfer_line = (
+        f"🔄 Transfer: {pred.suggested_transfer_out.web_name if pred.suggested_transfer_out else 'None'} ➜ "
+        f"{pred.suggested_transfer_in.web_name if pred.suggested_transfer_in else 'None'}{hit_note}"
+    )
+    if hold_reason:
+        transfer_line = f"🔒 Hold — {hold_reason}"
+
+    message = (
+        f"⏰ *{gw.name} {t('deadline_warning', lang)}*\n\n"
+        f"🎖 {t('captain_label', lang)}: *{pred.suggested_captain.web_name if pred.suggested_captain else 'N/A'}*\n"
+        f"{transfer_line}\n\n"
+        f"💭 {sanitize_markdown(pred.reasoning)}"
+    )
+
+    bot = Bot(token=settings.TELEGRAM_BOT_TOKEN)
+    asyncio.run(bot.send_message(chat_id=profile.telegram_chat_id, text=message, parse_mode="Markdown"))
+
+
+@shared_task(soft_time_limit=REMINDER_TASK_SOFT_LIMIT, time_limit=REMINDER_TASK_HARD_LIMIT)
 def send_deadline_reminder_task():
     gw = _target_gameweek()
     if not gw:
@@ -43,50 +85,50 @@ def send_deadline_reminder_task():
     if getattr(gw, "reminder_sent", False):
         return
 
-    profiles = FPLManagerProfile.objects.filter(
-        telegram_chat_id__isnull=False, fpl_team_id__isnull=False
-    )
+    # Only one run at a time: a slow run must not be overtaken by the next beat tick.
+    lock_key = f"deadline-reminder:lock:{gw.id}"
+    if not cache.add(lock_key, "1", timeout=REMINDER_LOCK_TTL):
+        logger.info("Deadline reminder for GW %s is already running; skipping this run.", gw.id)
+        return
 
-    for profile in profiles:
-        try:
-            lang = profile.preferred_language
-            sync_free_transfers(profile)
-            manager_state = get_manager_gameweek_state(profile.fpl_team_id, gw.fpl_id)
-            manager_state["free_transfers"] = profile.free_transfers
-            pred = generate_ai_prediction(
-                gw, manager_state["squad"], manager_state, user=profile.user, lang=lang
-            )
+    try:
+        profiles = FPLManagerProfile.objects.filter(
+            telegram_chat_id__isnull=False, fpl_team_id__isnull=False
+        )
 
-            hold_reason = pred.data_snapshot.get("hold_reason") if pred.data_snapshot else None
-            hit_cost = pred.data_snapshot.get("hit_cost", 0) if pred.data_snapshot else 0
-            hit_note = f" (⚠️ -{hit_cost} pts hit)" if hit_cost else ""
+        still_pending = 0
+        for profile in profiles:
+            sent_key = f"deadline-reminder:sent:{gw.id}:{profile.id}"
+            attempts_key = f"deadline-reminder:attempts:{gw.id}:{profile.id}"
 
-            transfer_line = (
-                f"🔄 Transfer: {pred.suggested_transfer_out.web_name if pred.suggested_transfer_out else 'None'} ➜ "
-                f"{pred.suggested_transfer_in.web_name if pred.suggested_transfer_in else 'None'}{hit_note}"
-            )
-            if hold_reason:
-                transfer_line = f"🔒 Hold — {hold_reason}"
+            if cache.get(sent_key):
+                continue  # already got this gameweek's reminder in an earlier run
 
-            message = (
-                f"⏰ *{gw.name} {t('deadline_warning', lang)}*\n\n"
-                f"🎖 {t('captain_label', lang)}: *{pred.suggested_captain.web_name if pred.suggested_captain else 'N/A'}*\n"
-                f"{transfer_line}\n\n"
-                f"💭 {sanitize_markdown(pred.reasoning)}"
-            )
+            cache.add(attempts_key, 0, timeout=REMINDER_STATE_TTL)
+            attempts = cache.incr(attempts_key)
+            if attempts > REMINDER_MAX_ATTEMPTS:
+                logger.error("Giving up on deadline reminder for profile %s (GW %s)", profile.id, gw.id)
+                continue
 
-            bot = Bot(token=settings.TELEGRAM_BOT_TOKEN)
-            asyncio.run(bot.send_message(chat_id=profile.telegram_chat_id, text=message, parse_mode="Markdown"))
+            try:
+                _send_reminder(profile, gw)
+                cache.set(sent_key, "1", timeout=REMINDER_STATE_TTL)
+            except SoftTimeLimitExceeded:
+                raise
+            except Exception:
+                logger.exception(f"send_deadline_reminder_task failed for profile {profile.id}")
+                if attempts < REMINDER_MAX_ATTEMPTS:
+                    still_pending += 1  # the next run will try this user again
 
-        except Exception:
-            logger.exception(f"send_deadline_reminder_task failed for profile {profile.id}")
-            continue
-
-    gw.reminder_sent = True
-    gw.save(update_fields=["reminder_sent"])
+        # Mark the gameweek done only once everybody has either been messaged or given up on.
+        if still_pending == 0:
+            gw.reminder_sent = True
+            gw.save(update_fields=["reminder_sent"])
+    finally:
+        cache.delete(lock_key)
 
 
-@shared_task
+@shared_task(soft_time_limit=1500, time_limit=1620)
 def send_weekly_squad_health_task():
     # Picks only exist for the current (or a past) gameweek: the FPL API returns 404 for the next
     # one until its deadline passes. So the squad is fetched from the current GW; the form data
@@ -125,8 +167,22 @@ def send_weekly_squad_health_task():
             continue
 
 
-@shared_task(rate_limit="10/m")
-def generate_differentials_task(telegram_chat_id, lang="en"):
+@shared_task(rate_limit="10/m", bind=True, max_retries=2, default_retry_delay=30)
+def generate_differentials_task(self, telegram_chat_id, lang="en"):
+    try:
+        _send_differentials(telegram_chat_id, lang)
+    except Exception as exc:
+        logger.exception(f"generate_differentials_task failed for chat {telegram_chat_id}")
+        if self.request.retries < self.max_retries:
+            raise self.retry(exc=exc)
+        try:
+            bot = Bot(token=settings.TELEGRAM_BOT_TOKEN)
+            asyncio.run(bot.send_message(chat_id=telegram_chat_id, text=t("differentials_failed", lang)))
+        except Exception:
+            logger.exception("Also failed to send failure notification to user")
+
+
+def _send_differentials(telegram_chat_id, lang):
     gw = Gameweek.objects.filter(is_current=True).first()
     if not gw:
         return

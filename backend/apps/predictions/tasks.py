@@ -133,7 +133,7 @@ def generate_prediction_task(self, user_id, gameweek_id, fpl_team_id, telegram_c
             bot = Bot(token=settings.TELEGRAM_BOT_TOKEN)
             asyncio.run(bot.send_message(
                 chat_id=telegram_chat_id,
-                text=t("Sorry, I couldn't generate your prediction right now. Please try again in a few minutes.")
+                text=t("prediction_failed", lang),
             ))
         except Exception:
             logger.exception("Also failed to send failure notification to user")

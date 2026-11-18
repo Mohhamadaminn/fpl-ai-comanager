@@ -3,7 +3,7 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile.prod
-    command: sh -c "python manage.py migrate --noinput && gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 3"
+    command: sh -c "python manage.py migrate --noinput && gunicorn config.wsgi:application -c gunicorn.conf.py"
     env_file: .env
     # Reachable only from other services on the compose network (nginx in `web`),
     # never published on the host.

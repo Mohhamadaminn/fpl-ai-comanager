@@ -6,9 +6,9 @@ It combines live FPL data, a statistical rating engine, and an LLM that explains
 
 ![Demo](docs/media/demo.gif)
 
-| Player comparison | Squad check |
+| Player Comparison | LLM Verdict |
 |---|---|
-| ![Compare players](docs/media/screenshot-1.png) | ![Squad check](docs/media/screenshot-2.png) |
+| ![Compare Players](docs/media/screenshot-1.png) | ![LLM Verdict](docs/media/screenshot-2.png) |
 
 ---
 

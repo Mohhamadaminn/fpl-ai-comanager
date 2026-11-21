@@ -1,283 +1,194 @@
-# FPL AI Manager
+# FPL AI Co-Manager
 
-A full-stack Fantasy Premier League assistant built with Django REST Framework, a React website, and a Telegram bot. The project combines live FPL data, squad analysis, player comparison, prediction tools, and automated notifications for managers who want faster decision-making.
+An AI-assisted Fantasy Premier League co-manager: a **React website** for deep player analysis and a **Telegram bot** for quick advice and deadline reminders, both powered by one **Django REST** backend.
 
-This repo is organized so you can work on two main products separately:
+It combines live FPL data, a statistical rating engine, and an LLM that explains decisions in plain language (English and Persian).
 
-- Telegram Bot: chat-first experience for quick squad updates, reminders, and transfer guidance
-- Website: browser experience for deeper analysis and player comparison
-- Backend API: shared data layer and business logic used by both
+![Demo](docs/media/demo.gif)
+
+| Player comparison | Squad check |
+|---|---|
+| ![Compare players](docs/media/screenshot-1.png) | ![Squad check](docs/media/screenshot-2.png) |
 
 ---
 
-## Overview
+## What it does
 
-The application is designed to help FPL managers by:
+**Website**
+- **Compare players** side by side with a radar chart, form, fixtures and an AI verdict.
+- **Squad check**: paste your FPL team and get a flagged list of players to review (minutes risk, slumps, fixture outlook).
+- JWT-based accounts, with an FPL team linked to each profile.
 
-- comparing players and squads
-- checking upcoming fixtures and difficulty
-- tracking squad form and health
-- generating AI-assisted transfer and captain recommendations
-- sending deadline reminders and weekly health summaries
-- surfacing live and historical FPL data in a clean interface
+**Telegram bot** (`/start`, `/setteamid`, `/myteam`, `/prediction`, `/differentials`, `/performance`, `/fixtures`, `/language`, `/status`, `/help`)
+- Captain and transfer suggestions for your own squad, including hit cost and "hold" advice.
+- Low-ownership **differential** picks with a one-line reason each.
+- Per-gameweek **performance** summaries.
+- **Deadline reminder** within 24 hours of the deadline, and a **weekly squad health check** every Friday at 20:00.
+- Fully bilingual: English and Persian (with RTL handling).
+
+**Under the hood**
+- FPL data synced on a schedule (bootstrap, fixtures, live stats every 5 minutes).
+- Predictions are stored and later **evaluated against real results** once a gameweek finishes.
+- A **backtest** tool (`apps/fpl_data/squad_backtest.py`) checks whether the squad-check rules actually separate under- and over-performers, and warns about its own statistical limits.
+
+---
+
+## Why it's interesting
+
+- **Statistics first, LLM second.** Ratings come from a deterministic engine in `compare_engine.py` (shrunk per-minute rates, z-score and percentile ratings, fixture and team-strength adjustments). The LLM (Groq, `openai/gpt-oss` models) explains and decides between options. It does not invent the numbers.
+- **Two front doors, one backend.** The bot and website share the same services, so a fix lands in both.
+- **Built to run unattended.** Scheduled jobs, retries, idempotent reminders and rate limits (see [Production notes](#production-notes)).
 
 ---
 
 ## Architecture
 
-### 1) Telegram Bot
-Location: `backend/apps/notifications/` and bot service in `docker-compose.yml`
+```mermaid
+flowchart LR
+    U1[Browser] --> N[nginx + React build]
+    U2[Telegram user] --> B[Telegram bot<br/>python-telegram-bot]
+    N -->|/api| D[Django + DRF<br/>gunicorn]
+    D --> P[(PostgreSQL)]
+    D <--> R[(Redis<br/>cache + broker)]
+    B --> P
+    B -->|enqueue| R
+    R --> W[Celery worker]
+    BT[Celery beat] -->|schedules| R
+    W --> P
+    W -->|squad + fixtures| F[Official FPL API]
+    D --> F
+    D -->|explanations / verdicts| G[Groq LLM API]
+    W --> G
+    W -->|messages| T[Telegram API]
+```
 
-Responsibilities:
-- user onboarding and team linking
-- FPL team updates via chat commands
-- fixture and squad information
-- transfer and captain suggestions
-- scheduled reminders and weekly notifications
-- multilingual responses
+| Service | Role |
+|---|---|
+| `backend` | Django REST API (auth, players, comparison, squad insights) |
+| `bot` | Telegram bot process (`manage.py runbot`) |
+| `celery-worker` / `celery-beat` | Data syncs, predictions, reminders, weekly checks |
+| `db` / `redis` | PostgreSQL 17, Redis 7 (Redis db 0 = Celery, db 1 = cache and throttle counters) |
+| `web` (prod) | nginx serving the React build and proxying `/api/` |
 
-Main bot entry points:
-- `backend/apps/notifications/bot.py`
-- `backend/apps/notifications/management/commands/runbot.py`
-- `backend/apps/notifications/tasks.py`
+**Code map**
 
-### 2) Website
-Location: `frontend/`
-
-Responsibilities:
-- React + Vite frontend
-- comparison views and dashboard-style UI
-- marketing / landing sections
-- public-access product experience for managers
-
-Main frontend files:
-- `frontend/src/App.jsx`
-- `frontend/src/pages/ComparePlayers.jsx`
-- `frontend/src/components/`
-
-### 3) Backend API
-Location: `backend/`
-
-Responsibilities:
-- Django + DRF backend
-- FPL data sync and processing
-- API endpoints for frontend and bot integration
-- Celery jobs for scheduled syncs and notifications
-- user accounts and manager profiles
-
-Main backend areas:
-- `backend/config/`
-- `backend/apps/fpl_data/`
-- `backend/apps/accounts/`
-- `backend/apps/predictions/`
-- `backend/apps/notifications/`
-
----
-
-## Tech Stack
-
-- Backend: Django, Django REST Framework, PostgreSQL
-- Async jobs: Celery + Redis
-- Telegram: python-telegram-bot
-- Frontend: React, Vite, Recharts
-- Containerization: Docker + Docker Compose
-
----
-
-## Project Structure
-
-```bash
-.
-├── backend/
-│   ├── apps/
-│   │   ├── accounts/
-│   │   ├── fpl_data/
-│   │   ├── notifications/
-│   │   ├── predictions/
-│   │   └── ...
-│   ├── config/
-│   ├── requirements/
-│   ├── manage.py
-│   ├── Dockerfile
-│   └── Dockerfile.prod
-├── frontend/
-│   ├── src/
-│   ├── package.json
-│   ├── vite.config.js
-│   └── Dockerfile.prod
-├── docker-compose.yml
-├── docker-compose.prod.yml
-├── README.md
-└── .env
+```
+backend/apps/
+  fpl_data/       FPL sync, rating engine, compare + squad insights, throttles
+  predictions/    AI predictions, caching, evaluation vs real results
+  notifications/  Telegram bot, reminder tasks, translations (en/fa)
+  accounts/       users, JWT auth, FPL manager profiles
+frontend/src/     React 19 + Vite + Recharts
 ```
 
 ---
 
-## Environment Variables
+## Tech stack
 
-Create a `.env` file in the project root with the required values. The app expects variables such as:
-
-```env
-SECRET_KEY=your-secret-key
-DEBUG=True
-ALLOWED_HOSTS=localhost,127.0.0.1
-DB_NAME=fpl_db
-DB_USER=fpl_user
-DB_PASSWORD=fpl_password
-TELEGRAM_BOT_TOKEN=your_telegram_token
-GROQ_API_KEY=your_groq_key
-CELERY_BROKER_URL=redis://redis:6379/0
-CELERY_RESULT_BACKEND=redis://redis:6379/0
-CORS_ALLOWED_ORIGINS=http://localhost:5173
-CSRF_TRUSTED_ORIGINS=http://localhost:5173
-```
+Django 5.2 LTS · Django REST Framework · PostgreSQL · Celery + Redis · python-telegram-bot · Groq API · React 19 · Vite · Recharts · Docker Compose · gunicorn · nginx
 
 ---
 
-## Running the Project
-
-### Option 1: Docker (recommended)
-
-From the project root:
+## Quick start (Docker)
 
 ```bash
+git clone https://github.com/Mohhamadaminn/fpl-ai-comanager.git
+cd fpl-ai-comanager
+# create .env in the project root (see Configuration below)
 docker compose up --build
 ```
 
-This runs the main services:
+Then open the API at `http://localhost:8000`. Run the frontend with `npm install && npm run dev` inside `frontend/` (`http://localhost:5173`).
 
-- backend Django app
-- PostgreSQL database
-- Redis
-- Celery worker
-- Celery beat
+The dev compose file routes outbound traffic through a proxy by default (`HTTP_PROXY` etc.). Override those variables if you don't need one.
 
-The Telegram bot service is currently disabled by default (it uses a Compose profile, no code was removed). To run it:
-
-```bash
-docker compose --profile telegram up bot
-```
-
-### Option 2: Local development
-
-#### Backend
+<details>
+<summary>Running without Docker</summary>
 
 ```bash
 cd backend
-python -m venv .venv
-source .venv/bin/activate
+python -m venv .venv && source .venv/bin/activate
 pip install -r requirements/dev.txt
 python manage.py migrate
-python manage.py runserver 0.0.0.0:8000
+python manage.py runserver        # API
+python manage.py runbot           # Telegram bot (separate terminal)
+celery -A config worker -l info   # worker (separate terminal)
+celery -A config beat -l info     # scheduler (separate terminal)
 ```
+</details>
 
-#### Telegram Bot
+## Configuration
+
+Required:
+
+| Variable | Purpose |
+|---|---|
+| `SECRET_KEY` | Django secret |
+| `DB_NAME`, `DB_USER`, `DB_PASSWORD` | PostgreSQL |
+| `GROQ_API_KEY` | LLM access |
+| `TELEGRAM_BOT_TOKEN` | Bot token from BotFather |
+| `CELERY_BROKER_URL`, `CELERY_RESULT_BACKEND` | Redis URLs |
+| `ALLOWED_HOSTS`, `CORS_ALLOWED_ORIGINS`, `CSRF_TRUSTED_ORIGINS` | Host and origin allow-lists |
+
+Optional tuning (all have defaults):
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `LLM_THROTTLE_BURST` / `LLM_THROTTLE_DAILY` | `10/minute` / `200/day` | Per-IP limits on LLM-backed endpoints |
+| `NUM_PROXIES` | `1` | Trusted proxy hops for client-IP detection |
+| `GROQ_TIMEOUT_SECONDS`, `GROQ_MAX_RETRIES` | `20`, `1` | LLM call limits |
+| `WEB_CONCURRENCY`, `GUNICORN_THREADS`, `GUNICORN_TIMEOUT` | `3`, `4`, `90` | gunicorn sizing |
+| `BOT_CONCURRENT_UPDATES` | `8` | Telegram updates handled in parallel |
+| `CELERY_TASK_SOFT_TIME_LIMIT`, `CELERY_TASK_TIME_LIMIT` | `600`, `660` | Celery limits (seconds) |
+| `REDIS_CACHE_URL` | broker URL, db 1 | Cache and throttle store |
+| `USE_HTTPS` | `False` | Enables HTTPS-related security settings |
+
+---
+
+## Production notes
+
+`docker-compose.prod.yml` runs gunicorn (threaded workers) behind nginx; the backend port is not published to the host.
+
+- **Rate limiting:** the two LLM-backed endpoints are throttled per IP with counters in Redis. nginx overwrites `X-Forwarded-For`, so clients cannot spoof their way around the limit.
+- **Timeouts everywhere:** Groq, FPL API and nginx upstream calls all have explicit timeouts, so one slow dependency can't tie up workers.
+- **Retries:** FPL sync tasks retry with exponential backoff; user-triggered tasks retry and then tell the user if they still fail.
+- **Idempotent reminders:** the deadline reminder uses a lock and per-user "already sent" markers, so overlapping runs or retries never message anyone twice.
+- **Bot concurrency:** the bot handles multiple updates in parallel and recycles stale database connections.
+
+Not covered yet: automated database backups, admin-panel network restriction and TLS termination.
+
+---
+
+## Testing
 
 ```bash
 cd backend
-source .venv/bin/activate
-python manage.py runbot
+python manage.py test apps.fpl_data.test_throttling apps.fpl_data.test_reliability apps.notifications.test_reliability
 ```
 
-#### Frontend
-
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-The React app usually runs on:
-
-- `http://localhost:5173`
-
-The Django API usually runs on:
-
-- `http://localhost:8000`
+These need no database. The rest of the suite uses PostgreSQL, so set the `DB_*` variables first.
 
 ---
 
-## Telegram Bot vs Website
+## Known limitations
 
-### Telegram Bot
-Best for quick interactions and notifications.
+- Predictions are advisory and not guaranteed to be right; the evaluation job records how they actually did.
+- No global spending cap on LLM calls yet. Per-IP throttling is the only guard.
+- Data comes from the unofficial public FPL API, which can change without notice.
 
-Typical bot use cases:
-- connect FPL team by link
-- check squad status
-- fetch fixtures
-- receive reminders before deadline
-- get weekly health checks
-- ask for transfer/captain recommendations
+## Roadmap
 
-### Website
-Best for richer analysis and visual exploration.
-
-Typical website use cases:
-- compare players side by side
-- browse analytics and insights
-- show more detailed dashboards and UI flows
-- serve a broader product experience outside chat
-
-This separation helps you focus on the bot independently without mixing the bot logic with the frontend UI.
+- Scheduled database backups and a restore drill
+- TLS and admin lockdown once hosting is chosen
+- Wider test coverage for the prediction pipeline
 
 ---
 
-## Common Tasks
+## Author
 
-### Working on the Telegram bot
-Focus on:
-- `backend/apps/notifications/bot.py`
-- `backend/apps/notifications/tasks.py`
-- `backend/apps/notifications/translations.py`
-- `backend/apps/accounts/services.py`
-
-### Working on the website
-Focus on:
-- `frontend/src/`
-- `frontend/src/components/`
-- `frontend/src/pages/`
-- `frontend/src/api/`
-
-### Working on the backend API
-Focus on:
-- `backend/apps/fpl_data/`
-- `backend/apps/predictions/`
-- `backend/apps/accounts/`
-- `backend/config/settings.py`
-
----
-
-## Production Notes
-
-For production, the repo includes a production compose file:
-
-```bash
-docker compose -f docker-compose.prod.yml up --build
-```
-
-This is intended for deployment with the Django app behind a production-style setup and the frontend served by the production container config.
-
----
+**Mohamadamin Alizadeh**, backend developer (Django/DRF, PostgreSQL, Docker).
+GitHub: [@Mohhamadaminn](https://github.com/Mohhamadaminn)
 
 ## License
 
-This project is currently intended for personal or internal use unless otherwise specified by the owner.
-
----
-
-## Future Improvements
-
-Potential next steps:
-- add more advanced player comparison analytics
-- improve bot command UX and inline keyboards
-- add user auth flows for website accounts
-- expand AI decision support for transfers and captaincy
-- broaden multilingual support and notifications
-
----
-
-## Notes
-
-The project is already structured around a shared backend and two frontends: one in Telegram and one in the browser. That makes it easy to evolve each product independently while keeping the same core data and forecasting logic.
-
+Personal portfolio project. All rights reserved unless a license file says otherwise. Not affiliated with the Premier League or Fantasy Premier League.

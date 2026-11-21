@@ -54,6 +54,10 @@ class Player(models.Model):
     news = models.CharField(max_length=255, blank=True, default="")
     chance_of_playing_next_round = models.PositiveSmallIntegerField(null=True, blank=True)
 
+    # FPL's own expected points for the next gameweek ('ep_next' in bootstrap-static). Kept only as a
+    # reference to sanity-check our own expected-points model against; the model never uses it.
+    official_ep_next = models.DecimalField(max_digits=5, decimal_places=1, null=True, blank=True)
+
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
@@ -116,6 +120,14 @@ class PlayerGameweekStat(models.Model):
     tackles = models.PositiveIntegerField(default=0)
     defensive_contribution = models.PositiveIntegerField(default=0)
     expected_goals_conceded = models.DecimalField(max_digits=5, decimal_places=2, default=0)
+
+    # Inputs of the expected-points model. NULL = "not synced yet" (rows saved before these fields existed
+    # stay NULL until the gameweek is synced again, e.g. with `backfill_live_stats`), which is different
+    # from a real 0 and is left out of the model's rates instead of counting as zero.
+    saves = models.PositiveSmallIntegerField(null=True, blank=True)
+    bonus = models.PositiveSmallIntegerField(null=True, blank=True)
+    yellow_cards = models.PositiveSmallIntegerField(null=True, blank=True)
+    red_cards = models.PositiveSmallIntegerField(null=True, blank=True)
 
     is_final = models.BooleanField(default=False)  # True once the gameweek is officially finished
     updated_at = models.DateTimeField(auto_now=True)

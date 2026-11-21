@@ -2,8 +2,12 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from .models import Player, Team
-from .serializers import PlayerListSerializer, TeamListSerializer, ComparePlayersRequestSerializer, SquadInsightsRequestSerializer
+from .serializers import (
+    PlayerListSerializer, TeamListSerializer, ComparePlayersRequestSerializer, SquadInsightsRequestSerializer,
+    SquadExpectedPointsRequestSerializer,
+)
 from .squad_insights import get_squad_insights
+from .expected_points import get_squad_expected_points
 from .compare_engine import compare_players
 from .throttles import LLMBurstThrottle, LLMDailyThrottle
 
@@ -90,4 +94,22 @@ class SquadInsightsView(APIView):
         except ValueError as e:
             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
  
+        return Response(result)
+
+
+class SquadExpectedPointsView(APIView):
+    """Expected points and a P10-P90 range for every player of a squad (no LLM involved).
+    It still calls the FPL API to read the squad, so it shares the per-IP limits of the other
+    squad endpoint."""
+    throttle_classes = [LLMBurstThrottle, LLMDailyThrottle]
+
+    def post(self, request):
+        req = SquadExpectedPointsRequestSerializer(data=request.data)
+        req.is_valid(raise_exception=True)
+
+        try:
+            result = get_squad_expected_points(req.validated_data["team"])
+        except ValueError as e:
+            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
         return Response(result)

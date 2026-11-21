@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import { getSquadInsights } from "../api/compare";
+import { getSquadExpectedPoints, getSquadInsights } from "../api/compare";
 import PlayerPhoto from "./PlayerPhoto";
+import SquadXp from "./SquadXp";
 
 const STORAGE_KEY = "fpl-squad-check-team";
 
@@ -90,6 +91,8 @@ function ReplacementOptions({ options }) {
 function SquadCheck() {
   const [team, setTeam] = useState(readSaved);
   const [result, setResult] = useState(null);
+  const [xp, setXp] = useState(null);
+  const [xpError, setXpError] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
@@ -102,17 +105,31 @@ function SquadCheck() {
 
     setLoading(true);
     setError(null);
-    try {
-      const data = await getSquadInsights(trimmed, "en");
-      setResult(data);
+    setXpError(null);
+
+    // The two parts are independent: if one fails the other is still shown.
+    const [insights, expected] = await Promise.allSettled([
+      getSquadInsights(trimmed, "en"),
+      getSquadExpectedPoints(trimmed),
+    ]);
+
+    const messageOf = (outcome) => {
+      const message = outcome.reason?.response?.data?.error;
+      return typeof message === "string" ? message : "Something went wrong.";
+    };
+
+    setResult(insights.status === "fulfilled" ? insights.value : null);
+    setXp(expected.status === "fulfilled" ? expected.value : null);
+    if (insights.status === "fulfilled" || expected.status === "fulfilled") {
       writeSaved(trimmed);
-    } catch (e) {
-      const message = e.response?.data?.error;
-      setResult(null);
-      setError(typeof message === "string" ? message : "Something went wrong.");
-    } finally {
-      setLoading(false);
     }
+    if (insights.status === "rejected") {
+      setError(messageOf(insights));
+    }
+    if (expected.status === "rejected" && insights.status === "fulfilled") {
+      setXpError(messageOf(expected));
+    }
+    setLoading(false);
   }
 
   useEffect(() => {
@@ -174,8 +191,16 @@ function SquadCheck() {
         </div>
       )}
 
+      {!loading && (xp || xpError) && (
+        <div className="squad-results reveal">
+          {xp && <SquadXp data={xp} />}
+          {xpError && <p className="compare-error">{xpError}</p>}
+        </div>
+      )}
+
       {!loading && result && (
         <div className="squad-results reveal">
+          {xp && <h3 className="squad-subhead">Players to review</h3>}
           <p className="squad-meta">
             {result.squad_gameweek} squad
             {windowLabel ? ` · based on ${windowLabel}` : ""}

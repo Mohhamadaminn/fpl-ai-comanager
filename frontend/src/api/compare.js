@@ -29,3 +29,8 @@ export async function getSquadInsights(team, lang = "en") {
   const { data } = await apiClient.post("/squad-insights/", { team, lang });
   return data;
 }
+
+export async function getSquadExpectedPoints(team) {
+  const { data } = await apiClient.post("/squad-xp/", { team });
+  return data;
+}

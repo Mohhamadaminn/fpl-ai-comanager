@@ -16,7 +16,7 @@ It combines live FPL data, a statistical rating engine, and an LLM that explains
 
 **Website**
 - **Compare players** side by side with a radar chart, form, fixtures and an AI verdict.
-- **Squad check**: paste your FPL team and get a flagged list of players to review (minutes risk, slumps, fixture outlook).
+- **Squad check**: paste your FPL team and get a flagged list of players to review (minutes risk, slumps, fixture outlook), plus **predicted points** for every player of the squad for the next gameweek, shown on a pitch in the squad's formation (e.g. 3-5-2) with the bench below. Each player has a likely range (10th-90th percentile), the team gets a total, and a **recommended captain** is highlighted with a vice-captain. The captain is a fit, likely-to-play midfielder or forward from the XI, ranked by predicted points with a strong bonus for premium players (price and ownership percentile; constants `PRIME_BONUS` etc. in `expected_points.py`). No LLM involved: it is a statistical model (minutes, team goal model, per-90 rates, exact scoring distributions; double and blank gameweeks handled). FPL's own `ep_next` is shown beside it only for comparison.
 - JWT-based accounts, with an FPL team linked to each profile.
 
 **Telegram bot** (`/start`, `/setteamid`, `/myteam`, `/prediction`, `/differentials`, `/performance`, `/fixtures`, `/language`, `/status`, `/help`)
@@ -29,6 +29,7 @@ It combines live FPL data, a statistical rating engine, and an LLM that explains
 **Under the hood**
 - FPL data synced on a schedule (bootstrap, fixtures, live stats every 5 minutes).
 - Predictions are stored and later **evaluated against real results** once a gameweek finishes.
+- `python manage.py backtest_xp` replays the expected-points model on finished gameweeks (using only earlier data) and reports the average error, the bias, how often the real score fell inside the shown range (should be near 80%) and the comparison with a naive "last 5 games" guess. Run `python manage.py backfill_live_stats` once after deploying so older gameweeks get the new saves / bonus / cards fields. Next season the model can use last season's data as a prior through `Dataset.priors` (see `expected_points.py`).
 - A **backtest** tool (`apps/fpl_data/squad_backtest.py`) checks whether the squad-check rules actually separate under- and over-performers, and warns about its own statistical limits.
 
 ---

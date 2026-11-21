@@ -29,4 +29,7 @@ class TeamListSerializer(serializers.ModelSerializer):
 class SquadInsightsRequestSerializer(serializers.Serializer):
     team = serializers.CharField(max_length=200)  # official FPL link or plain team id
     lang = serializers.ChoiceField(choices=["en", "fa"], default="en")
- 
+
+
+class SquadExpectedPointsRequestSerializer(serializers.Serializer):
+    team = serializers.CharField(max_length=200)  # official FPL link or plain team id

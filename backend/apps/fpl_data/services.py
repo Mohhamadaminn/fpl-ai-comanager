@@ -21,7 +21,7 @@ STAT_UPDATE_FIELDS = [
     "expected_goals", "expected_assists", "expected_goal_involvements",
     "expected_goals_conceded", "bps", "ict_index", "is_final",
     "clearances_blocks_interceptions", "recoveries", "tackles",
-    "defensive_contribution", "updated_at",
+    "defensive_contribution", "saves", "bonus", "yellow_cards", "red_cards", "updated_at",
 ]
 
 
@@ -63,6 +63,20 @@ def sanitize_markdown(text: str) -> str:
 def enforce_rtl(text: str, lang: str) -> str:
     """Return the message without additional bidi control characters."""
     return text
+
+
+def _decimal_or_none(value):
+    """FPL sends some numbers as strings ("5.2"); anything missing or unparsable becomes None."""
+    if value in (None, ""):
+        return None
+    try:
+        return Decimal(str(value))
+    except Exception:
+        return None
+
+
+def _int_or_none(value):
+    return value if isinstance(value, int) else None
 
 
 def sync_bootstrap_data():
@@ -129,6 +143,7 @@ def sync_bootstrap_data():
                 "status": player_data["status"],
                 "news": player_data.get("news", ""),
                 "chance_of_playing_next_round": player_data.get("chance_of_playing_next_round"),
+                "official_ep_next": _decimal_or_none(player_data.get("ep_next")),
             },
         )
 
@@ -197,6 +212,11 @@ def sync_live_gameweek_stats(gameweek_fpl_id: int):
                 recoveries=stats.get("recoveries") or 0,
                 tackles=stats.get("tackles") or 0,
                 defensive_contribution=stats.get("defensive_contribution") or 0,
+                # None when FPL does not send the key, so "unknown" is never stored as a real 0.
+                saves=_int_or_none(stats.get("saves")),
+                bonus=_int_or_none(stats.get("bonus")),
+                yellow_cards=_int_or_none(stats.get("yellow_cards")),
+                red_cards=_int_or_none(stats.get("red_cards")),
             )
         )
 

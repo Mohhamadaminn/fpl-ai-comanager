@@ -42,8 +42,11 @@ from .compare_engine import (
     TEAM_FORM_WINDOW,
     TEAM_SEASON_SHARE,
     TEAM_XG_SHARE,
+    ELITE_BASE_SCORE,
     _availability,
+    _recent_window_ids,
     _target_gameweek,
+    _team_ratings,
 )
 from .models import Fixture, Player, PlayerGameweekStat, Team
 from .services import ASSIST_POINTS, CLEAN_SHEET_POINTS, DC_POINTS, DC_THRESHOLD, GOAL_POINTS
@@ -244,6 +247,7 @@ def build_team_model(matches):
 @dataclass
 class MatchContext:
     opponent: str
+    opponent_id: int
     home: bool
     fdr: int | None
     att_mult: float        # opponent's effect on the player's goals / assists
@@ -259,6 +263,7 @@ def match_context(model, entry, team_names):
     mu_all = (model.mu_home + model.mu_away) / 2
     return MatchContext(
         opponent=team_names.get(opp, "?"),
+        opponent_id=opp,
         home=home,
         fdr=entry.get("fdr"),
         # his xG already reflects his own team's attack, so only the opponent's defence and the venue change it
@@ -424,8 +429,9 @@ def build_profile(position, apps, team_gws, pop, prior=None):
 # ---------------------------------------------------------------------------
 # One match -> distribution of his points
 # ---------------------------------------------------------------------------
-def _state_pmf(profile, ctx, full):
-    """His points in a match given that he plays it as a full game (60+ min) or a cameo."""
+def _state_parts(profile, ctx, full):
+    """The independent scoring components of one match, given that he plays it as a full game (60+ min)
+    or a cameo, each as a {points: probability} distribution."""
     pos = profile.position
     minutes = profile.m_full if full else profile.m_sub
     frac = minutes / 90.0
@@ -444,7 +450,11 @@ def _state_pmf(profile, ctx, full):
         parts.append(_bernoulli(profile.dc_full * scale, DC_POINTS))
     parts.append(_bernoulli(1 - math.exp(-profile.yc90 * frac), YELLOW_POINTS))
     parts.append(_bernoulli(1 - math.exp(-profile.rc90 * frac), RED_POINTS))
-    return _convolve_all(parts)
+    return parts
+
+
+def _state_pmf(profile, ctx, full):
+    return _convolve_all(_state_parts(profile, ctx, full))
 
 
 def match_pmf(profile, ctx):
@@ -552,38 +562,55 @@ def load_dataset(max_gw_exclusive=None):
 # ---------------------------------------------------------------------------
 # Prediction
 # ---------------------------------------------------------------------------
+@dataclass
+class Prepared:
+    rows: dict
+    model: TeamModel
+    pop: dict
+    team_gws: dict
+    schedule: dict
+
+
+def prepare(dataset, target_gw):
+    """The per-gameweek building blocks shared by every prediction (team model, position averages...)."""
+    rows, matches = dataset.before(target_gw)
+    model = build_team_model(matches)
+    positions = {pid: pos for pid, (pos, _) in dataset.players.items()}
+    team_gws = {}
+    for m in matches:
+        gws = team_gws.setdefault(m["team"], [])
+        if not gws or gws[-1] != m["gw"]:
+            gws.append(m["gw"])
+    return Prepared(rows, model, build_population(rows, positions), team_gws, dataset.schedule.get(target_gw, {}))
+
+
+def _profile_and_contexts(dataset, prep, pid):
+    position, team_id = dataset.players[pid]
+    profile = build_profile(
+        position, prep.rows.get(pid, []), prep.team_gws.get(team_id, []), prep.pop, prior=dataset.priors.get(pid)
+    )
+    contexts = [match_context(prep.model, e, dataset.team_names) for e in prep.schedule.get(team_id, [])]
+    return profile, contexts
+
+
 def predict_gameweek(dataset, target_gw, player_ids, availability=None, with_pmf=False):
     """{player id: {"xp", "low", "high", "p_play", "fixtures", "low_data"[, "pmf"]}} for the target gameweek,
     using only data from earlier gameweeks (so it can be run for past gameweeks too).
 
     availability: {player id: 0-1}; players not in it count as fully available."""
     availability = availability or {}
-    rows, matches = dataset.before(target_gw)
-    model = build_team_model(matches)
-    positions = {pid: pos for pid, (pos, _) in dataset.players.items()}
-    pop = build_population(rows, positions)
-
-    team_gws = {}
-    for m in matches:
-        gws = team_gws.setdefault(m["team"], [])
-        if not gws or gws[-1] != m["gw"]:
-            gws.append(m["gw"])
-
-    schedule = dataset.schedule.get(target_gw, {})
+    prep = prepare(dataset, target_gw)
     out = {}
     for pid in player_ids:
-        position, team_id = dataset.players[pid]
-        profile = build_profile(
-            position, rows.get(pid, []), team_gws.get(team_id, []), pop, prior=dataset.priors.get(pid)
-        )
-        entries = schedule.get(team_id, [])
-        contexts = [match_context(model, e, dataset.team_names) for e in entries]
+        profile, contexts = _profile_and_contexts(dataset, prep, pid)
         a = min(1.0, max(0.0, availability.get(pid, 1.0)))
         pmf = player_pmf(profile, contexts, a)
         result = summarize(pmf)
         result.update({
             "p_play": a * (1 - (1 - profile.p_sel) ** len(contexts)) if contexts else 0.0,
-            "fixtures": [{"opponent": c.opponent, "home": c.home, "fdr": c.fdr} for c in contexts],
+            "fixtures": [
+                {"opponent": c.opponent, "opponent_id": c.opponent_id, "home": c.home, "fdr": c.fdr} for c in contexts
+            ],
             "low_data": profile.low_data,
         })
         if with_pmf:
@@ -593,9 +620,90 @@ def predict_gameweek(dataset, target_gw, player_ids, availability=None, with_pmf
 
 
 # ---------------------------------------------------------------------------
+# Verdict: one short word per player instead of numbers
+# ---------------------------------------------------------------------------
+# The word comes from the same compare_engine score the Squad Check cards use (0-100, 50 = average for the
+# position: form, fixtures, team strength, minutes) so tags and cards always agree. The thresholds reuse the
+# engine's own landmarks: ELITE_BASE_SCORE (70) and the move-on outlook line (45).
+STANDOUT_SCORE = ELITE_BASE_SCORE        # 70
+PROMISING_SCORE = 60
+QUIET_SCORE = 45                         # squad_insights.MOVE_ON_SCORE_MAX: below it the engine says move on
+SAFE_MIN_SCORE = 50                      # "Safe": average or better AND almost always plays
+SAFE_MIN_PLAY = 0.9
+ROTATION_MAX_PLAY, UNLIKELY_MAX_PLAY = 0.6, 0.3
+
+VERDICT_NOTES = {
+    "Standout": "One of the strongest options in his position right now.",
+    "Promising": "A good outlook for the week.",
+    "Safe": "Plays almost every week and should bring steady points.",
+    "Steady": "Fine to start, but nothing special is expected.",
+    "Quiet": "Not expected to score much this week.",
+    "Rotation risk": "He may not start this week.",
+    "Unlikely to play": "He is unlikely to play this week.",
+    "No game": "Blank gameweek: his team has no match.",
+}
+MIN_FORM_FOR_PRAISE = 60                 # engine form rating (50 = average): below it he is never praised (Steady at best)
+FLAG_NOTES = {                           # why the Squad Check "move on" rules flag him (kind -> note)
+    "slump": "His recent games have been well below his usual level.",
+    "outlook": "His overall outlook is below average right now.",
+    "minutes": "He is losing minutes.",
+}
+FORM_NOTE = "Decent numbers overall, but his recent form is only modest."
+TOP_TEAM_NOTE = "Faces one of the strongest teams, so don't expect much."
+ORDER = ("Quiet", "Steady", "Safe", "Promising", "Standout")
+
+
+def player_verdict(entry, engine_score=None, flag=None, form=None):
+    """{"label", "tone", "note"}: a word for how the week looks for this player, no numbers.
+
+    1. Availability and minutes first (out, doubt, blank, rotation).
+    2. Otherwise the engine score gives the word; without it (too little data) he is "Steady".
+    3. Praise needs recent form: with an engine form rating below MIN_FORM_FOR_PRAISE he is Steady at best.
+    4. Caps: if the Squad Check 'Time to move on' rules flag him (`flag` = slump / outlook / minutes) he is
+       Quiet; a single match against a top-5 team means at most Steady, unless he is a premium attacker
+       (see prime_index) or it is a double gameweek."""
+    status, chance = entry["status"], entry.get("chance_of_playing_next_round")
+    if status in ("i", "s", "u", "n"):
+        return {"label": "Out", "tone": "bad", "note": entry.get("news") or "He is not available."}
+    if status == "d" or (chance is not None and chance < 100):
+        return {"label": "Doubt", "tone": "warn", "note": entry.get("news") or "His availability is in doubt."}
+    if not entry["fixtures"]:
+        return {"label": "No game", "tone": "muted", "note": VERDICT_NOTES["No game"]}
+    if entry["p_play"] < UNLIKELY_MAX_PLAY:
+        return {"label": "Unlikely to play", "tone": "warn", "note": VERDICT_NOTES["Unlikely to play"]}
+    if entry["p_play"] < ROTATION_MAX_PLAY:
+        return {"label": "Rotation risk", "tone": "warn", "note": VERDICT_NOTES["Rotation risk"]}
+
+    if engine_score is None:
+        label = "Steady"
+    elif engine_score >= STANDOUT_SCORE:
+        label = "Standout"
+    elif engine_score >= PROMISING_SCORE:
+        label = "Promising"
+    elif engine_score < QUIET_SCORE:
+        label = "Quiet"
+    elif engine_score >= SAFE_MIN_SCORE and entry["p_play"] >= SAFE_MIN_PLAY:
+        label = "Safe"
+    else:
+        label = "Steady"
+
+    note = VERDICT_NOTES[label]
+    if form is not None and form < MIN_FORM_FOR_PRAISE and ORDER.index(label) > ORDER.index("Steady"):
+        label, note = "Steady", FORM_NOTE
+    if flag:
+        label, note = "Quiet", FLAG_NOTES.get(flag, VERDICT_NOTES["Quiet"])
+    elif entry.get("faces_top_team") and entry.get("prime", 0.0) < PRIME_LABEL_AT and ORDER.index(label) > ORDER.index("Steady"):
+        label, note = "Steady", TOP_TEAM_NOTE
+    if len(entry["fixtures"]) > 1:
+        note += " Double gameweek."
+    tone = {"Standout": "great", "Promising": "good", "Safe": "safe", "Steady": "neutral", "Quiet": "low"}[label]
+    return {"label": label, "tone": tone, "note": note}
+
+
+# ---------------------------------------------------------------------------
 # Squad Check entry point
 # ---------------------------------------------------------------------------
-def _player_entry(player, result, slot, prime=0.0):
+def _player_entry(player, result, slot, prime=0.0, recent_points=None):
     return {
         "id": player.id,
         "slot": slot,
@@ -607,13 +715,16 @@ def _player_entry(player, result, slot, prime=0.0):
         "status": player.status,
         "news": player.news,
         "chance_of_playing_next_round": player.chance_of_playing_next_round,
-        "xp": round(result["xp"], 2),    # predicted points; the screen shows it rounded to a whole number
-        "low": result["low"],
-        "high": result["high"],
+        "xp": round(result["xp"], 2),    # internal (captain ranking, XI estimate): the screen shows words only
         "p_play": round(result["p_play"], 2),
         "fixtures": result["fixtures"],
         "low_data": result["low_data"],
+        "recent_points": recent_points or [],
+        "verdict": None,
         "prime": round(prime, 2),
+        # "Premium" in the FPL sense: an expensive attacker who is also heavily owned (not just popular)
+        "premium": prime >= PRIME_LABEL_AT and float(player.price) >= PREMIUM_MIN_PRICE,
+        "faces_top_team": False,
         "is_captain": False,
         "is_vice_captain": False,
     }
@@ -626,7 +737,9 @@ def _player_entry(player, result, slot, prime=0.0):
 # expensive, heavily owned attacker, and the model's number alone kept preferring cheaper players with a
 # soft fixture over them. A prime player is passed over only if he is unfit, a likely benchwarmer, or his
 # predicted score is clearly lower. Tune these three with the captain section of the README.
+TOP_TEAMS = 5                # a non-prime player facing one of this many strongest teams is never captain
 PRIME_BONUS = 0.5            # a perfectly prime player's score counts x1.5; a non-prime one x1.0
+PREMIUM_MIN_PRICE = 9.0      # the "Premium player" tag also needs a price of at least this (millions)
 PRIME_LABEL_AT = 0.7         # at or above this the card shows "Premium player"
 CAPTAIN_MIN_PLAY = 0.7       # chance he plays below this: not a captain (rotation / doubt)
 CAPTAIN_TIE_MARGIN = 0.03    # scores within 3% of the top are separated by how sure the player is to play
@@ -649,37 +762,73 @@ def prime_index(price, ownership, pool):
     return ((pct(price, 0) + pct(ownership, 1)) / 2) ** 2
 
 
+def entry_prime(player, pool):
+    """prime_index for attackers only: the pool is the league's midfielders and forwards, so a defender or
+    keeper compared with it would be meaningless (a popular defender would look 'premium')."""
+    if player.position not in CAPTAIN_POSITIONS:
+        return 0.0
+    return prime_index(float(player.price), float(player.selected_by_percent), pool)
+
+
 def captain_score(entry):
     """Predicted points, raised for prime players. Only used to rank captain candidates."""
     return entry["xp"] * (1 + PRIME_BONUS * entry.get("prime", 0.0))
 
 
+def overall_strength(rating):
+    """One 0-100 number for how strong a team is, from compare_engine's team ratings: real results (season
+    + recent form) carry 70%, the average of its xG attack and xGC defence the other 30% (the same split
+    as the engine's team_strength axis, but not specific to one position)."""
+    xg_part = (rating["att"] + (100 - rating["leaky"])) / 2
+    return TEAM_XG_SHARE * xg_part + (1 - TEAM_XG_SHARE) * rating["res"]
+
+
+def top_teams(ratings, n=None):
+    """Ids of the n (default TOP_TEAMS) strongest teams. ratings: {team id: {"att", "leaky", "res"}}."""
+    n = TOP_TEAMS if n is None else n
+    ranked = sorted(ratings, key=lambda team: -overall_strength(ratings[team]))
+    return set(ranked[:n])
+
+
 def _captain_eligible(entry):
     """Never an injured, doubtful, suspended or unavailable player (FPL status 'a' only, the same safety
-    rule as the bot), he must have a match, and he must be likely to actually play."""
-    return entry["status"] == "a" and bool(entry["fixtures"]) and entry["p_play"] >= CAPTAIN_MIN_PLAY
+    rule as the bot), he must have a match, and he must be likely to actually play. A non-prime player
+    whose one opponent is a top-5 side is out too; a double gameweek lifts that rule because the second
+    match can make up for the hard one, and a prime player is exempt (see prime_index)."""
+    if entry["status"] != "a" or not entry["fixtures"] or entry["p_play"] < CAPTAIN_MIN_PLAY:
+        return False
+    return not (entry.get("faces_top_team") and entry.get("prime", 0.0) < PRIME_LABEL_AT)
 
 
-def pick_captains(starters):
-    """(captain, vice) from the starting XI, or (None, None) when nobody qualifies.
+def ranked_captains(starters, limit=3):
+    """The best captain candidates of the starting XI, best first (at most `limit`).
 
-    Only midfielders and forwards are considered (a defender or keeper is a captain only if the XI has no
+    Only midfielders and forwards are considered (a defender or keeper is a candidate only if the XI has no
     eligible attacker). They are ranked by predicted points x prime bonus; when two are practically level
-    the one more certain to play wins. The captain must start: a benched captain scores nothing."""
+    the one more certain to play comes first. A captain must start: a benched captain scores nothing."""
     eligible = [e for e in starters if _captain_eligible(e)]
     pool = [e for e in eligible if e["position"] in CAPTAIN_POSITIONS] or eligible
     pool = sorted(pool, key=lambda e: -captain_score(e))
-    if not pool:
-        return None, None
 
-    def best(candidates):
-        top = captain_score(candidates[0])
-        close = [e for e in candidates if top - captain_score(e) <= top * CAPTAIN_TIE_MARGIN]
-        return max(close, key=lambda e: (e["p_play"], captain_score(e)))
+    ranked = []
+    while pool and len(ranked) < limit:
+        top = captain_score(pool[0])
+        close = [e for e in pool if top - captain_score(e) <= top * CAPTAIN_TIE_MARGIN]
+        pick = max(close, key=lambda e: (e["p_play"], captain_score(e)))
+        ranked.append(pick)
+        pool = [e for e in pool if e["id"] != pick["id"]]
+    return ranked
 
-    captain = best(pool)
-    rest = [e for e in pool if e["id"] != captain["id"]]
-    return captain, (best(rest) if rest else None)
+
+def pick_captains(starters):
+    """(captain, vice) from the starting XI, or (None, None) when nobody qualifies."""
+    ranked = ranked_captains(starters, 2)
+    return (ranked[0] if ranked else None), (ranked[1] if len(ranked) > 1 else None)
+
+
+def captain_alternatives(starters, captain, limit=2):
+    """The next best candidates after the recommended one: the choice stays with the user."""
+    return [e for e in ranked_captains(starters, limit + 1) if captain is None or e["id"] != captain["id"]][:limit]
 
 
 def captain_reasons(captain, starters):
@@ -693,17 +842,31 @@ def captain_reasons(captain, starters):
     known = [f["fdr"] for f in fixtures if f["fdr"] is not None]
     if known and min(known) <= EASY_FDR:
         reasons.append("Easy fixture")
-    if captain.get("prime", 0.0) >= PRIME_LABEL_AT:
+    if captain.get("premium"):
         reasons.append("Premium player")
     if captain["p_play"] >= 0.9:
         reasons.append("Almost certain to play")
-    if captain["xp"] >= max(e["xp"] for e in starters) - 1e-9:
-        reasons.append("Highest predicted score in your XI")
-    return reasons[:4]
+    return reasons[:3]
 
 
-def _double(pmf):
-    return {points * 2: prob for points, prob in pmf.items()}
+def _team_strength_ratings(target):
+    """compare_engine's team ratings, from the shared cache the Squad Check cards use when possible."""
+    from .squad_insights import WINDOW_MAX, _ratings_for
+
+    window = _recent_window_ids(target, WINDOW_MAX)
+    return _ratings_for(target, window) if window else _team_ratings(target)
+
+
+XI_RANGE_WIDTH = 5           # the shown range for the whole XI is exactly this many points wide
+RECENT_POINTS_SHOWN = 5
+
+
+def xi_estimate(starters, captain):
+    """A rough points range for the starting XI: the sum of the players' predicted points (the captain
+    counted twice) with a fixed, narrow width. It is a guide, not a promise: real weeks swing more."""
+    mean = sum(e["xp"] for e in starters) + (captain["xp"] if captain else 0.0)
+    low = max(0, round(mean - XI_RANGE_WIDTH / 2))
+    return {"low": low, "high": low + XI_RANGE_WIDTH, "includes_captain": captain is not None}
 
 
 def _formation(starters):
@@ -711,6 +874,30 @@ def _formation(starters):
     if len(starters) != 11 or counts["GKP"] != 1:
         return None
     return f"{counts['DEF']}-{counts['MID']}-{counts['FWD']}"
+
+
+def _engine_views(players, target):
+    """{player id: (compare_engine score or None, form rating or None, move-on flag or None)} from the same evaluation the Squad Check
+    cards use, so a tag can never contradict a card. Empty when the engine cannot run (too little data)."""
+    from .squad_insights import WINDOW_MAX, _collect_evals, _move_on_signal
+
+    window = _recent_window_ids(target, WINDOW_MAX)
+    if not window:
+        return {}
+    try:
+        evals, _env = _collect_evals(players, target, window)
+    except ValueError:
+        return {}
+    out = {}
+    for ev in evals:
+        engine = ev.get("engine")
+        signal = _move_on_signal(ev, "moderate")
+        out[ev["player"].id] = (
+            engine["score"] if engine else None,
+            engine["breakdown"]["form"]["score"] if engine else None,
+            signal[1] if signal else None,
+        )
+    return out
 
 
 def get_squad_expected_points(team_input):
@@ -736,7 +923,6 @@ def get_squad_expected_points(team_input):
         target.fpl_id,
         [p.id for p in players],
         availability={p.id: _availability(p)["multiplier"] for p in players},
-        with_pmf=True,
     )
 
     pool = [
@@ -746,7 +932,10 @@ def get_squad_expected_points(team_input):
     ]
     entries = sorted(
         (
-            _player_entry(p, results[p.id], slots[p.fpl_id], prime_index(float(p.price), float(p.selected_by_percent), pool))
+            _player_entry(
+                p, results[p.id], slots[p.fpl_id], entry_prime(p, pool),
+                [r["points"] for r in dataset.rows.get(p.id, []) if r["gw"] < target.fpl_id][-RECENT_POINTS_SHOWN:],
+            )
             for p in players
         ),
         key=lambda e: e["slot"],
@@ -754,27 +943,31 @@ def get_squad_expected_points(team_input):
     starters = [e for e in entries if e["slot"] <= 11]
     bench = [e for e in entries if e["slot"] > 11]
 
+    strongest = top_teams(_team_strength_ratings(target))
+    for e in entries:
+        e["faces_top_team"] = len(e["fixtures"]) == 1 and e["fixtures"][0]["opponent_id"] in strongest
+
+    engine = _engine_views(players, target)
+    for e in entries:
+        score, form, flag = engine.get(e["id"], (None, None, None))
+        e["verdict"] = player_verdict(e, score, flag, form)
+
     captain, vice = pick_captains(starters)
     if captain:
         captain["is_captain"] = True
     if vice:
         vice["is_vice_captain"] = True
 
-    # The XI total counts the recommended captain twice. Players are treated as independent, so the
-    # total's range is a little narrower than reality.
-    total_pmf = _convolve_all([
-        _double(results[e["id"]]["pmf"]) if e["is_captain"] else results[e["id"]]["pmf"] for e in starters
-    ])
-    total = summarize(total_pmf)
     data_through = max((r["gw"] for rs in dataset.rows.values() for r in rs), default=None)
+    xi_range = xi_estimate(starters, captain)
 
     captain_block = None
     if captain:
         captain_block = {
             "player": captain,
-            "points_as_captain": round(captain["xp"] * 2, 1),
             "reasons": captain_reasons(captain, starters),
             "vice": vice,
+            "alternatives": captain_alternatives(starters, captain),
         }
 
     return {
@@ -786,14 +979,14 @@ def get_squad_expected_points(team_input):
             "FPL does not publish the lineup for the upcoming gameweek before its deadline."
         ),
         "data_through_gameweek": data_through,
-        "range": {"low_percentile": int(RANGE_LOW * 100), "high_percentile": int(RANGE_HIGH * 100)},
         "formation": _formation(starters),
         "starting_xi": starters,
         "bench": bench,
         "recommended_captain": captain_block,
-        "xi_total": {
-            "xp": round(total["xp"], 1), "low": total["low"], "high": total["high"],
-            "players_counted": len(starters), "approximate_range": True, "includes_captain": captain is not None,
-        },
+        "captain_note": None if captain else (
+            "No safe captain pick this week: your fit attackers either face a top-5 side, are doubtful "
+            "or are unlikely to play."
+        ),
+        "xi_estimate": xi_range,
         "missing_players": max(0, len(slots) - len(players)),
     }

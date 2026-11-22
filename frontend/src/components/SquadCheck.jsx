@@ -21,6 +21,12 @@ function writeSaved(value) {
   }
 }
 
+const STRENGTH_LABELS = {
+  strong: "Strong case",
+  moderate: "Moderate case",
+  mild: "Mild · keep an eye on",
+};
+
 function StatChips({ insight }) {
   const { stats, player } = insight;
   const isAttacker = player.position === "MID" || player.position === "FWD";
@@ -219,6 +225,11 @@ function SquadCheck() {
                   className={`squad-card ${insight.type === "another_chance" ? "chance" : "move"}`}
                 >
                   <span className="squad-card-title">{insight.title}</span>
+                  {insight.strength && (
+                    <span className={`squad-strength squad-strength--${insight.strength}`}>
+                      {STRENGTH_LABELS[insight.strength]}
+                    </span>
+                  )}
                   <div className="squad-card-player">
                     <PlayerPhoto
                       className="squad-photo"

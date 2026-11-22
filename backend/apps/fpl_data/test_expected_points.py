@@ -265,7 +265,7 @@ class PredictionTests(SimpleTestCase):
         self.assertEqual(self.out[6]["p_play"], 0.0)
 
     def test_fixture_info_is_reported(self):
-        self.assertEqual(self.out[1]["fixtures"], [{"opponent": "DDD", "home": True, "fdr": 2}])
+        self.assertEqual(self.out[1]["fixtures"], [{"opponent": "DDD", "opponent_id": 4, "home": True, "fdr": 2}])
 
     def test_injured_player_is_zero_and_doubtful_halves_the_expectation(self):
         fit = self.out[1]["xp"]
@@ -308,11 +308,13 @@ class PredictionTests(SimpleTestCase):
 # ---------------------------------------------------------------------------
 # captain and formation
 # ---------------------------------------------------------------------------
-def entry(pid, xp_value, position="MID", status="a", p_play=0.95, fixtures=None, fdr=3, prime=0.0):
+def entry(pid, xp_value, position="MID", status="a", p_play=0.95, fixtures=None, fdr=3, prime=0.0,
+          faces_top_team=False, news="", chance=None):
     if fixtures is None:
-        fixtures = [{"opponent": "BOU", "home": True, "fdr": fdr}]
+        fixtures = [{"opponent": "BOU", "opponent_id": 99, "home": True, "fdr": fdr}]
     return {"id": pid, "name": f"P{pid}", "xp": xp_value, "position": position, "status": status,
-            "p_play": p_play, "fixtures": fixtures, "low": 0, "high": 10, "prime": prime}
+            "p_play": p_play, "fixtures": fixtures, "prime": prime, "faces_top_team": faces_top_team,
+            "news": news, "chance_of_playing_next_round": chance}
 
 
 class CaptainTests(SimpleTestCase):
@@ -341,8 +343,7 @@ class CaptainTests(SimpleTestCase):
     def test_reasons(self):
         xi = [entry(1, 7.0, fdr=2), entry(2, 4.0)]
         reasons = xp.captain_reasons(xi[0], xi)
-        self.assertEqual(reasons, ["Home vs BOU", "Easy fixture", "Almost certain to play",
-                                   "Highest predicted score in your XI"])
+        self.assertEqual(reasons, ["Home vs BOU", "Easy fixture", "Almost certain to play"])
         double = entry(3, 5.0, fixtures=[{"opponent": "CHE", "home": False, "fdr": 4},
                                          {"opponent": "LIV", "home": True, "fdr": 4}])
         self.assertEqual(xp.captain_reasons(double, xi + [double])[:3], ["Double gameweek", "Away at CHE", "Home vs LIV"])
@@ -384,17 +385,135 @@ class CaptainTests(SimpleTestCase):
 
     def test_premium_player_gets_a_reason_chip(self):
         star = entry(1, 6.0, "FWD", prime=0.9)
+        star["premium"] = True
         self.assertIn("Premium player", xp.captain_reasons(star, [star]))
         self.assertNotIn("Premium player", xp.captain_reasons(entry(2, 6.0, prime=0.2), [star]))
 
-    def test_doubling_a_distribution(self):
-        self.assertEqual(xp._double({0: 0.5, 3: 0.5}), {0: 0.5, 6: 0.5})
+    def test_non_prime_player_facing_a_top_team_is_never_captain(self):
+        facing = entry(1, 9.0, "FWD", prime=0.4, faces_top_team=True)
+        other = entry(2, 3.0, "MID", prime=0.1)
+        captain, vice = xp.pick_captains([facing, other])
+        self.assertEqual((captain["id"], vice), (2, None))
+        self.assertEqual(xp.pick_captains([facing]), (None, None))
 
-    def test_formation(self):
-        xi = [entry(i, 1, "GKP") for i in (1,)] + [entry(i, 1, "DEF") for i in (2, 3, 4)] \
-            + [entry(i, 1, "MID") for i in (5, 6, 7, 8, 9)] + [entry(i, 1, "FWD") for i in (10, 11)]
-        self.assertEqual(xp._formation(xi), "3-5-2")
-        self.assertIsNone(xp._formation(xi[:5]))
+    def test_prime_player_is_exempt_from_the_top_team_rule(self):
+        haaland = entry(1, 5.0, "FWD", prime=0.95, faces_top_team=True)
+        self.assertEqual(xp.pick_captains([haaland, entry(2, 4.0, "MID", prime=0.1)])[0]["id"], 1)
+
+    def test_prime_exemption_starts_at_the_premium_label(self):
+        just_below = entry(1, 9.0, "FWD", prime=xp.PRIME_LABEL_AT - 0.01, faces_top_team=True)
+        just_at = entry(2, 9.0, "FWD", prime=xp.PRIME_LABEL_AT, faces_top_team=True)
+        self.assertEqual(xp.pick_captains([just_below])[0], None)
+        self.assertEqual(xp.pick_captains([just_at])[0]["id"], 2)
+
+    def test_overall_strength_and_top_teams(self):
+        ratings = {
+            1: {"att": 90, "leaky": 10, "res": 90},    # strongest
+            2: {"att": 50, "leaky": 50, "res": 50},
+            3: {"att": 20, "leaky": 80, "res": 10},    # weakest
+            4: {"att": 60, "leaky": 40, "res": 70},
+            5: {"att": 55, "leaky": 45, "res": 60},
+            6: {"att": 40, "leaky": 60, "res": 30},
+        }
+        self.assertGreater(xp.overall_strength(ratings[1]), xp.overall_strength(ratings[2]))
+        self.assertAlmostEqual(xp.overall_strength({"att": 100, "leaky": 0, "res": 100}), 100.0)
+        self.assertAlmostEqual(xp.overall_strength({"att": 0, "leaky": 100, "res": 0}), 0.0)
+        self.assertEqual(xp.top_teams(ratings, 3), {1, 4, 5})
+        self.assertEqual(len(xp.top_teams(ratings)), 5)
+        self.assertNotIn(3, xp.top_teams(ratings))
+
+    def test_alternatives_are_the_next_best_candidates(self):
+        a = entry(1, 7.0, "FWD", prime=0.9)
+        b = entry(2, 6.0, "MID", prime=0.6)
+        c = entry(3, 5.5, "MID", prime=0.5)
+        d = entry(4, 5.0, "MID", prime=0.5)
+        captain, _ = xp.pick_captains([a, b, c, d])
+        self.assertEqual(captain["id"], 1)
+        self.assertEqual([e["id"] for e in xp.captain_alternatives([a, b, c, d], captain)], [2, 3])
+        self.assertEqual(xp.captain_alternatives([entry(1, 5, status="i")], None), [])
+
+    def test_xi_estimate_is_five_points_wide_and_counts_the_captain_twice(self):
+        xi = [entry(i, 5.0) for i in range(1, 12)]
+        est = xp.xi_estimate(xi, xi[0])
+        self.assertEqual(est["high"] - est["low"], 5)
+        self.assertTrue(est["low"] <= 60 <= est["high"])      # 11 x 5 + captain 5
+        self.assertTrue(est["includes_captain"])
+        no_cap = xp.xi_estimate(xi, None)
+        self.assertEqual(no_cap["high"] - no_cap["low"], 5)
+        self.assertFalse(no_cap["includes_captain"])
+        self.assertGreaterEqual(xp.xi_estimate([entry(1, 0.0)], None)["low"], 0)
+
+
+class VerdictTests(SimpleTestCase):
+    def label(self, e, score=65, slump=False):
+        return xp.player_verdict(e, score, slump)["label"]
+
+    def test_availability_comes_first(self):
+        self.assertEqual(self.label(entry(1, 6, status="i", news="Knee")), "Out")
+        self.assertEqual(xp.player_verdict(entry(1, 6, status="i", news="Knee"), 99)["note"], "Knee")
+        self.assertEqual(self.label(entry(1, 6, status="d", chance=50)), "Doubt")
+        self.assertEqual(self.label(entry(1, 6, chance=75)), "Doubt")
+
+    def test_blank_gameweek_and_minutes(self):
+        self.assertEqual(self.label(entry(1, 0, fixtures=[], p_play=0.0)), "No game")
+        self.assertEqual(self.label(entry(1, 2, p_play=0.2)), "Unlikely to play")
+        self.assertEqual(self.label(entry(1, 3, p_play=0.5)), "Rotation risk")
+
+    def test_engine_score_decides_the_word(self):
+        e = entry(1, 6)
+        self.assertEqual(self.label(e, 78), "Standout")
+        self.assertEqual(self.label(e, 62), "Promising")
+        self.assertEqual(self.label(e, 52), "Safe")
+        self.assertEqual(self.label(entry(1, 6, p_play=0.8), 52), "Steady")
+        self.assertEqual(self.label(e, 47), "Steady")
+        self.assertEqual(self.label(e, 40), "Quiet")
+        self.assertEqual(self.label(e, None), "Steady")
+
+    def test_a_move_on_flag_means_quiet_whatever_the_score(self):
+        for kind in ("slump", "outlook", "minutes"):
+            verdict = xp.player_verdict(entry(1, 6), 80, kind, 90)
+            self.assertEqual(verdict["label"], "Quiet")
+        self.assertIn("recent games", xp.player_verdict(entry(1, 6), 80, "slump")["note"])
+
+    def test_poor_recent_form_means_steady_at_best(self):
+        self.assertEqual(xp.player_verdict(entry(1, 6), 75, None, 80)["label"], "Standout")
+        self.assertEqual(xp.player_verdict(entry(1, 6), 75, None, 58)["label"], "Steady")     # Bruno case
+        self.assertEqual(xp.player_verdict(entry(1, 6), 62, None, 51)["label"], "Steady")
+        self.assertEqual(xp.player_verdict(entry(1, 6), 40, None, 30)["label"], "Quiet")       # never raised
+
+    def test_premium_needs_a_high_price_not_just_ownership(self):
+        class P:
+            def __init__(self, price): self.id, self.web_name, self.price = 1, "x", price
+        result = {"xp": 5, "p_play": 1, "fixtures": [], "low_data": False}
+        for price, expected in ((7.5, False), (9.0, True), (14.5, True)):
+            player = type("Pl", (), {"id": 1, "web_name": "x", "price": price, "team": type("T", (), {"short_name": "T"})(),
+                                      "position": "MID", "code": 1, "status": "a", "news": "",
+                                      "chance_of_playing_next_round": None})()
+            self.assertEqual(xp._player_entry(player, result, 1, prime=0.9)["premium"], expected)
+        self.assertFalse(xp._player_entry(player, result, 1, prime=0.3)["premium"])
+
+    def test_only_attackers_can_be_premium(self):
+        pool = [(5.0 + i * 0.5, float(i * 2)) for i in range(20)]
+        popular_defender = type("P", (), {"position": "DEF", "price": 6.0, "selected_by_percent": 38.0})()
+        star_forward = type("P", (), {"position": "FWD", "price": 14.5, "selected_by_percent": 38.0})()
+        self.assertEqual(xp.entry_prime(popular_defender, pool), 0.0)
+        self.assertGreater(xp.entry_prime(star_forward, pool), xp.PRIME_LABEL_AT)
+
+    def test_top_five_opponent_caps_at_steady_but_not_for_premium_or_double(self):
+        tough = entry(1, 6, faces_top_team=True)
+        self.assertEqual(self.label(tough, 80), "Steady")
+        self.assertEqual(self.label(tough, 40), "Quiet")                     # a cap never raises
+        self.assertEqual(self.label(entry(1, 6, faces_top_team=True, prime=0.9), 80), "Standout")
+        two = [{"opponent": "A", "opponent_id": 1, "home": True, "fdr": 3}] * 2
+        self.assertEqual(self.label(entry(1, 6, fixtures=two), 80), "Standout")
+
+    def test_double_gameweek_is_mentioned(self):
+        two = [{"opponent": "A", "opponent_id": 1, "home": True, "fdr": 3}] * 2
+        self.assertIn("Double gameweek", xp.player_verdict(entry(1, 8, fixtures=two), 80)["note"])
+
+    def test_no_numbers_in_any_note(self):
+        for note in list(xp.VERDICT_NOTES.values()) + list(xp.FLAG_NOTES.values()) + [xp.TOP_TEAM_NOTE]:
+            self.assertFalse(any(ch.isdigit() or ch == "%" for ch in note))
 
 
 # ---------------------------------------------------------------------------
@@ -462,7 +581,10 @@ class LoadDatasetAndSquadTests(TestCase):
     def test_squad_entry_point(self):
         slots = {p.fpl_id: i + 1 for i, p in enumerate(self.players)}
         slots[6] = 12   # one benched player
-        with mock.patch("apps.fpl_data.squad_insights._load_squad", return_value=(slots, "Gameweek 8", 1, 0.5)):
+        with mock.patch("apps.fpl_data.squad_insights._load_squad", return_value=(slots, "Gameweek 8", 1, 0.5)), \
+                mock.patch("apps.fpl_data.squad_insights.redis_client") as redis, \
+                mock.patch.object(xp, "TOP_TEAMS", 1):    # this league has only 4 teams
+            redis.get.return_value = None
             result = xp.get_squad_expected_points("https://fantasy.premierleague.com/entry/123456/event/8")
         self.assertEqual(result["gameweek"]["id"], 9)
         self.assertEqual(result["squad_gameweek"], "Gameweek 8")
@@ -473,30 +595,68 @@ class LoadDatasetAndSquadTests(TestCase):
         first = result["starting_xi"][0]
         self.assertNotIn("official_xp", first)
         self.assertTrue(first["photo_url"].endswith("1001.png"))
-        self.assertLessEqual(first["low"], first["high"])
-        total = result["xi_total"]
+        for key in ("low", "high", "chances", "points"):
+            self.assertNotIn(key, first)
+        self.assertEqual(len(first["recent_points"]), 5)
+        self.assertEqual(first["verdict"]["label"] in {
+            "Standout", "Promising", "Safe", "Steady", "Quiet", "Rotation risk", "Unlikely to play", "Doubt", "Out",
+            "No game"}, True)
         captain = result["recommended_captain"]["player"]
-        self.assertTrue(total["includes_captain"])
-        # the captain counts twice in the total
-        self.assertAlmostEqual(
-            total["xp"], sum(e["xp"] for e in result["starting_xi"]) + captain["xp"], delta=0.3
-        )
-        self.assertLessEqual(total["low"], total["xp"])
-        self.assertGreaterEqual(total["high"], total["xp"])
+        estimate = result["xi_estimate"]
+        self.assertTrue(estimate["includes_captain"])
+        self.assertEqual(estimate["high"] - estimate["low"], 5)
+        # the captain counts twice in the estimate
+        mean = sum(e["xp"] for e in result["starting_xi"]) + captain["xp"]
+        self.assertTrue(estimate["low"] <= round(mean) <= estimate["high"])
 
     def test_captain_is_in_the_xi_and_flagged_once(self):
         slots = {p.fpl_id: i + 1 for i, p in enumerate(self.players)}
         slots[6] = 12
-        with mock.patch("apps.fpl_data.squad_insights._load_squad", return_value=(slots, "Gameweek 8", 0, 0.5)):
+        with mock.patch("apps.fpl_data.squad_insights._load_squad", return_value=(slots, "Gameweek 8", 0, 0.5)), \
+                mock.patch("apps.fpl_data.squad_insights.redis_client") as redis, \
+                mock.patch.object(xp, "TOP_TEAMS", 1):
+            redis.get.return_value = None
             result = xp.get_squad_expected_points("123456")
         block = result["recommended_captain"]
         flagged = [e for e in result["starting_xi"] if e["is_captain"]]
         self.assertEqual([e["id"] for e in flagged], [block["player"]["id"]])
         self.assertEqual(sum(e["is_vice_captain"] for e in result["starting_xi"]), 1)
         self.assertFalse(any(e["is_captain"] or e["is_vice_captain"] for e in result["bench"]))
-        self.assertAlmostEqual(block["points_as_captain"], block["player"]["xp"] * 2, delta=0.01)
         self.assertTrue(block["reasons"])
         self.assertEqual(result["formation"], None)    # only 5 starters in this tiny squad
+        self.assertLessEqual(len(block["alternatives"]), 2)
+        self.assertNotIn(block["player"]["id"], [e["id"] for e in block["alternatives"]])
+        self.assertTrue(all(r and not any(c.isdigit() and "%" in r for c in r) for r in block["reasons"]))
+        self.assertIsNone(result["captain_note"])
+        for e in result["starting_xi"] + result["bench"]:
+            self.assertIsInstance(e["faces_top_team"], bool)
+            self.assertIn("opponent_id", e["fixtures"][0])
+
+    def test_verdicts_use_the_engine_views(self):
+        slots = {p.fpl_id: i + 1 for i, p in enumerate(self.players)}
+        views = {p.id: (80.0, 90.0, "slump" if p.fpl_id == 1 else None) for p in self.players}     # player 1 is in a slump
+        with mock.patch("apps.fpl_data.squad_insights._load_squad", return_value=(slots, "Gameweek 8", 0, 0.5)), \
+                mock.patch("apps.fpl_data.squad_insights.redis_client") as redis, \
+                mock.patch.object(xp, "_engine_views", return_value=views), \
+                mock.patch.object(xp, "TOP_TEAMS", 1):
+            redis.get.return_value = None
+            result = xp.get_squad_expected_points("123456")
+        labels = {e["id"]: e["verdict"]["label"] for e in result["starting_xi"]}
+        slumped = next(p.id for p in self.players if p.fpl_id == 1)
+        self.assertEqual(labels[slumped], "Quiet")
+        self.assertTrue(all(label != "Quiet" for pid, label in labels.items() if pid != slumped))
+
+    def test_no_captain_when_every_attacker_faces_a_top_team(self):
+        slots = {p.fpl_id: i + 1 for i, p in enumerate(self.players)}
+        with mock.patch("apps.fpl_data.squad_insights._load_squad", return_value=(slots, "Gameweek 8", 0, 0.5)), \
+                mock.patch("apps.fpl_data.squad_insights.redis_client") as redis, \
+                mock.patch.object(xp, "TOP_TEAMS", 4):    # all four teams count as "top": nobody non-prime qualifies
+            redis.get.return_value = None
+            result = xp.get_squad_expected_points("123456")
+        self.assertIsNone(result["recommended_captain"])
+        self.assertIn("No safe captain", result["captain_note"])
+        self.assertFalse(any(e["is_captain"] or e["is_vice_captain"] for e in result["starting_xi"]))
+        self.assertFalse(result["xi_estimate"]["includes_captain"])
 
     def test_backtest_command_reports_error_and_coverage(self):
         from io import StringIO

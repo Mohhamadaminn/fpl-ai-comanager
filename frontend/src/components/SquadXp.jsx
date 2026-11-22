@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from "react";
 import PlayerPhoto from "./PlayerPhoto";
 import { statusBadge } from "../utils/status";
 
@@ -10,82 +11,113 @@ function fixtureText(fixtures) {
   return `${f.opponent} (${f.home ? "H" : "A"})`;
 }
 
-function PitchPlayer({ player }) {
+function PitchPlayer({ player, selected, onSelect }) {
+  const { verdict } = player;
   const badge = statusBadge(player);
-  const points = Math.round(player.xp);
-  const tooltip = [
-    player.name,
-    badge && (player.news ? `${badge.label}: ${player.news}` : badge.label),
-    player.low_data && "Few games played, so this prediction is less reliable",
-  ]
-    .filter(Boolean)
-    .join(" — ");
 
   return (
-    <div
-      className={`pp${player.is_captain ? " pp--captain" : ""}`}
-      title={tooltip}
-      aria-label={`${player.name}, predicted ${points} points, likely ${player.low} to ${player.high}`}
+    <button
+      type="button"
+      className={`pp pp--${verdict.tone}${player.is_captain ? " pp--captain" : ""}${selected ? " pp--selected" : ""}`}
+      aria-pressed={selected}
+      aria-label={`${player.name}, ${verdict.label}. Show details`}
+      onClick={() => onSelect(player.id)}
     >
-      <div className="pp-shirt">
+      <span className="pp-shirt">
         <PlayerPhoto className="pp-photo" name={player.name} photoUrl={player.photo_url} />
         {player.is_captain && <span className="pp-armband">C</span>}
         {player.is_vice_captain && <span className="pp-armband pp-armband--vice">V</span>}
         {badge && <span className={`pp-status pp-status--${badge.tone}`}>!</span>}
-      </div>
-      <div className="pp-name">
+      </span>
+      <span className="pp-plate">
         <strong>{player.name}</strong>
-        <span>{fixtureText(player.fixtures)}</span>
-      </div>
-      <div className="pp-points">
-        {points}
-        {player.low_data && <i>*</i>}
-      </div>
-      <div className="pp-range">
-        {player.low}–{player.high}
-      </div>
-    </div>
+        <small>{fixtureText(player.fixtures)}</small>
+      </span>
+      <span className={`pp-verdict pp-verdict--${verdict.tone}`}>{verdict.label}</span>
+    </button>
   );
 }
 
-function CaptainCard({ captain }) {
-  const { player, vice, reasons } = captain;
+function PlayerDetail({ player, onClose, innerRef }) {
+  const { verdict } = player;
+  const badge = statusBadge(player);
+  const fixtures = player.fixtures.length
+    ? player.fixtures.map((f) => `${f.opponent} (${f.home ? "H" : "A"})`).join(" + ")
+    : "No game this gameweek";
 
   return (
-    <section className="cap-card" aria-label="Recommended captain">
-      <span className="cap-label">Recommended captain</span>
-      <div className="cap-main">
-        <PlayerPhoto className="cap-photo" name={player.name} photoUrl={player.photo_url} />
-        <div className="cap-info">
-          <strong className="cap-name">{player.name}</strong>
-          <span className="cap-sub">
-            {player.team} · {player.position}
+    <section className="pd" ref={innerRef} tabIndex={-1} aria-label={`${player.name} details`}>
+      <div className="pd-head">
+        <PlayerPhoto className="pd-photo" name={player.name} photoUrl={player.photo_url} />
+        <div className="pd-title">
+          <strong>{player.name}</strong>
+          <span>
+            {player.team} · {player.position} · £{player.price}m
           </span>
-          <div className="cap-points">
-            <b>{Math.round(captain.points_as_captain)}</b>
-            <span>points as captain</span>
-          </div>
-          <span className="cap-sub">
-            ({Math.round(player.xp)} without the armband, likely{" "}
-            <span className="nowrap">
-              {player.low}–{player.high}
-            </span>
-            )
-          </span>
+          <span>{fixtures}</span>
         </div>
+        <span className={`pp-verdict pp-verdict--${verdict.tone} pd-verdict`}>{verdict.label}</span>
       </div>
 
-      {reasons.length > 0 && (
-        <ul className="cap-reasons">
-          {reasons.map((reason) => (
-            <li key={reason}>{reason}</li>
-          ))}
-        </ul>
+      <p className="pd-note">{verdict.note}</p>
+
+      <div className="pd-tags">
+        {badge && <span className={`player-status-badge player-status-badge--${badge.tone}`}>{badge.label}</span>}
+        {player.faces_top_team && <span className="pd-tag">Faces a top-5 side</span>}
+        {player.premium && <span className="pd-tag pd-tag--prime">Premium player</span>}
+        {player.low_data && <span className="pd-tag">Few games played</span>}
+      </div>
+
+      {player.recent_points.length > 0 && (
+        <div className="pd-recent">
+          <span>Last {player.recent_points.length} games</span>
+          <ul>
+            {player.recent_points.map((points, index) => (
+              <li key={index}>{points}</li>
+            ))}
+          </ul>
+        </div>
       )}
 
-      {vice && (
-        <p className="cap-vice">
-          Vice-captain: <strong>{vice.name}</strong> · {Math.round(vice.xp)} pts
+      <button type="button" className="pd-back" onClick={onClose}>
+        ↑ Back to lineup
+      </button>
+    </section>
+  );
+}
+
+function CaptainCard({ captain, onSelect }) {
+  const { player, vice, reasons, alternatives = [] } = captain;
+
+  return (
+    <section className="cap-card" aria-label="Suggested captain">
+      <PlayerPhoto className="cap-photo" name={player.name} photoUrl={player.photo_url} />
+      <div className="cap-info">
+        <span className="cap-label">Suggested captain</span>
+        <strong className="cap-name">{player.name}</strong>
+        {reasons.length > 0 && (
+          <ul className="cap-reasons">
+            {reasons.map((reason) => (
+              <li key={reason}>{reason}</li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      {(alternatives.length > 0 || vice) && (
+        <p className="cap-also">
+          Also consider:{" "}
+          {[...alternatives, ...(vice && !alternatives.some((a) => a.id === vice.id) ? [vice] : [])]
+            .slice(0, 3)
+            .map((option, index) => (
+              <span key={option.id}>
+                {index > 0 && ", "}
+                <button type="button" className="cap-link" onClick={() => onSelect(option.id)}>
+                  {option.name}
+                </button>
+              </span>
+            ))}
+          . The armband is your call.
         </p>
       )}
     </section>
@@ -93,61 +125,88 @@ function CaptainCard({ captain }) {
 }
 
 function SquadXp({ data }) {
-  const { xi_total: total } = data;
+  const [selectedId, setSelectedId] = useState(null);
+  const detailRef = useRef(null);
+  const pitchRef = useRef(null);
+  const { xi_estimate: estimate } = data;
   const rows = ROWS.map((position) => data.starting_xi.filter((p) => p.position === position));
+  const selected = [...data.starting_xi, ...data.bench].find((p) => p.id === selectedId) || null;
+
+  const behaviour = () =>
+    window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
+
+  // Picking a player takes the page straight to his details instead of leaving them below the fold.
+  useEffect(() => {
+    if (selectedId === null) return;
+    detailRef.current?.scrollIntoView({ behavior: behaviour(), block: "center" });
+    detailRef.current?.focus({ preventScroll: true });
+  }, [selectedId]);
+
+  const select = (id) => setSelectedId(id);
+  const close = () => {
+    setSelectedId(null);
+    pitchRef.current?.scrollIntoView({ behavior: behaviour(), block: "center" });
+  };
 
   return (
-    <section className="squad-xp" aria-label="Predicted points">
+    <section className="squad-xp" aria-label="Your gameweek outlook">
       <header className="squad-xp-header">
-        <h3>Predicted points · {data.gameweek.name}</h3>
-        <p>
-          The big number under each player is his predicted points for this gameweek. The small
-          numbers are the likely range, from a poor week to a good one.
-        </p>
+        <h3>Outlook · {data.gameweek.name}</h3>
+        <p>A guide for the week, not a forecast. Tap a player for details; the decisions are yours.</p>
       </header>
 
-      {data.recommended_captain && <CaptainCard captain={data.recommended_captain} />}
+      {data.recommended_captain && <CaptainCard captain={data.recommended_captain} onSelect={select} />}
+      {!data.recommended_captain && data.captain_note && <p className="cap-note">{data.captain_note}</p>}
 
-      <div className="pitch">
+      <div className="pitch" ref={pitchRef}>
         {data.formation && <span className="pitch-formation">{data.formation}</span>}
-        {rows.map(
-          (players, index) =>
-            players.length > 0 && (
-              <div className="pitch-row" key={ROWS[index]}>
-                {players.map((player) => (
-                  <PitchPlayer key={player.id} player={player} />
-                ))}
-              </div>
-            ),
+        <div className="pitch-rows">
+          {rows.map(
+            (players, index) =>
+              players.length > 0 && (
+                <div className="pitch-row" key={ROWS[index]}>
+                  {players.map((player) => (
+                    <PitchPlayer
+                      key={player.id}
+                      player={player}
+                      selected={player.id === selectedId}
+                      onSelect={select}
+                    />
+                  ))}
+                </div>
+              ),
+          )}
+        </div>
+
+        {data.bench.length > 0 && (
+          <div className="bench">
+            <span className="bench-title">Bench</span>
+            <div className="bench-row">
+              {data.bench.map((player) => (
+                <PitchPlayer
+                  key={player.id}
+                  player={player}
+                  selected={player.id === selectedId}
+                  onSelect={select}
+                />
+              ))}
+            </div>
+          </div>
         )}
       </div>
 
+      {selected && <PlayerDetail player={selected} onClose={close} innerRef={detailRef} />}
+
       <div className="xp-total">
-        <span>Predicted team points</span>
-        <strong>{Math.round(total.xp)}</strong>
-        <span className="xp-total-range">
-          likely {total.low}–{total.high}
-          {total.includes_captain ? " · captain counted twice" : ""}
-        </span>
+        <span>Starting XI estimate</span>
+        <strong>
+          {estimate.low}–{estimate.high} points
+        </strong>
+        <small>{estimate.includes_captain ? "Captain counted twice. " : ""}Real weeks swing more than this.</small>
       </div>
 
-      {data.bench.length > 0 && (
-        <div className="bench">
-          <h4 className="bench-title">Substitutes</h4>
-          <div className="bench-row">
-            {data.bench.map((player) => (
-              <div className="bench-slot" key={player.id}>
-                <span className="bench-position">{player.position}</span>
-                <PitchPlayer player={player} />
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
       <p className="xp-footnote">
-        {data.lineup_note} Based on gameweeks up to {data.data_through_gameweek}. * means few games
-        played, so the prediction is less reliable. Own goals and penalty misses are not included.
+        {data.lineup_note} Based on gameweeks up to {data.data_through_gameweek}.
       </p>
     </section>
   );

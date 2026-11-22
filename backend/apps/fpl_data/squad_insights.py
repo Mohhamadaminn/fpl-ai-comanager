@@ -69,6 +69,30 @@ HARD_FIXTURE_MAX_PCT = 30      # fixture-ease percentile at/below this => tough 
 CHANCE_MIN_FIXTURE_SCORE = 40       # weighted fixture score (50 = average) below this => not a "chance"
 MOVE_ON_NEXT_FIXTURE_SWING = 5      # most engine points the NEXT game's difficulty can add or take off
 
+# ---------------------------------------------------------------------------
+# Tiers. Both cards are looked for with strict rules first (strong case), then medium rules
+# (moderate case). Only when neither card was found at all a weak, relative fallback (mild case)
+# picks ONE card, so every squad shows at least one. "strict" is the original behaviour and the
+# only level the Telegram check and the backtest use.
+# ---------------------------------------------------------------------------
+CHANCE_LEVELS = {
+    "strict": {"mpg": CHANCE_MIN_MPG, "underlying": CHANCE_MIN_UNDERLYING, "gap": CHANCE_MIN_GAP,
+               "fixture": CHANCE_MIN_FIXTURE_SCORE, "availability": CHANCE_MIN_AVAILABILITY},
+    "moderate": {"mpg": 50, "underlying": 50, "gap": 12, "fixture": 35, "availability": CHANCE_MIN_AVAILABILITY},
+}
+MOVE_ON_LEVELS = {
+    "strict": {"min_mpg": MOVE_ON_MIN_MPG, "slump_form": SLUMP_MAX_FORM, "slump_drop": SLUMP_MIN_DROP,
+               "outlook": MOVE_ON_SCORE_MAX},
+    "moderate": {"min_mpg": 55, "slump_form": 50, "slump_drop": 0.5, "outlook": 50},
+}
+TIER_STRENGTH = (("strict", "strong"), ("moderate", "moderate"))
+# weak fallback (relative): the worst-outlook starter if he is below the position average, otherwise
+# the starter whose underlying numbers beat his points the most
+WEAK_MOVE_ON_MAX_SCORE = 65        # engine score (50 = position average). Deliberately above average: the card
+                                   # then only says he is the weakest of YOUR XI. At or above it nobody is flagged
+WEAK_CHANCE_MIN_MPG = 40
+WEAK_CHANCE_MIN_AVAILABILITY = 0.5
+
 
 # Same-price replacement suggestion (engine score of the candidates, same position)
 REPLACEMENT_EXTRA_BUDGET = 0.0   # on top of the outgoing player's price (bank is not known)
@@ -462,26 +486,29 @@ def _collect_evals(players, gameweek, window_ids):
     return evals, env
 
 
-def _is_chance(ev):
+def _is_chance(ev, level="strict"):
+    t = CHANCE_LEVELS[level]
     fixture_score = ev["fixture"].get("weighted_score")
     return (
-        ev["mpg"] >= CHANCE_MIN_MPG
-        and ev["availability"]["multiplier"] >= CHANCE_MIN_AVAILABILITY
-        and ev["underlying"] >= CHANCE_MIN_UNDERLYING
-        and ev["gap"] >= CHANCE_MIN_GAP
-        and (fixture_score is None or fixture_score >= CHANCE_MIN_FIXTURE_SCORE)   # NEW
+        ev["mpg"] >= t["mpg"]
+        and ev["availability"]["multiplier"] >= t["availability"]
+        and ev["underlying"] >= t["underlying"]
+        and ev["gap"] >= t["gap"]
+        and (fixture_score is None or fixture_score >= t["fixture"])
     )
 
-def _slump_info(ev):
+
+def _slump_info(ev, level="strict"):
     """The single definition of "in a slump", shared by the website cards and the Telegram check:
     form below the position average, and his last 5 games clearly below his own earlier level.
     Results only (xGI plays no part). Availability is NOT considered here. None when he is not."""
     engine, earlier = ev.get("engine"), ev.get("earlier")
     if not engine or not earlier:
         return None
+    t = MOVE_ON_LEVELS[level]
     form = engine["breakdown"]["form"]
     drop = earlier["ppg"] - form["recent_points_per_game"]
-    if form["games"] >= SLUMP_MIN_GAMES and form["score"] <= SLUMP_MAX_FORM and drop >= SLUMP_MIN_DROP:
+    if form["games"] >= SLUMP_MIN_GAMES and form["score"] <= t["slump_form"] and drop >= t["slump_drop"]:
         return {
             "games": int(form["games"]), "points": int(form["recent_points"]),
             "ppg": form["recent_points_per_game"], "earlier_ppg": earlier["ppg"], "drop": drop,
@@ -499,48 +526,95 @@ def _next_fixture_adjustment(ev):
     return MOVE_ON_NEXT_FIXTURE_SWING * max(-1.0, min(1.0, (score - 50) / 50))
 
 
-def _move_on_signal(ev):
+def _move_on_signal(ev, level="strict"):
     """(severity, kind) of the strongest reason to move on, or None. Severity tiers: unavailable
     100+, minutes 80+, slump 70+, outlook 60+. Results based: xGI plays no part here."""
+    t = MOVE_ON_LEVELS[level]
     multiplier = ev["availability"]["multiplier"]
     if multiplier == 0:
         return 100 + (100 - ev["underlying"]) / 100, "unavailable"
     if multiplier < CHANCE_MIN_AVAILABILITY:
         return None  # doubtful: not a "move on" case by itself
-    if ev["mpg"] < MOVE_ON_MIN_MPG:
-        return 80 + (MOVE_ON_MIN_MPG - ev["mpg"]) / MOVE_ON_MIN_MPG, "minutes"
+    if ev["mpg"] < t["min_mpg"]:
+        return 80 + (t["min_mpg"] - ev["mpg"]) / t["min_mpg"], "minutes"
 
     engine = ev.get("engine")
     if not engine:
         return None
-    slump = _slump_info(ev)
+    slump = _slump_info(ev, level)
     if slump:
         return 70 + min(slump["drop"], 5.0), "slump"
     adjusted = engine["score"] + _next_fixture_adjustment(ev)
-    if adjusted <= MOVE_ON_SCORE_MAX:
-        return 60 + min((MOVE_ON_SCORE_MAX - adjusted) / MOVE_ON_SCORE_MAX * 9, 9), "outlook"
+    if adjusted <= t["outlook"]:
+        return 60 + min((t["outlook"] - adjusted) / t["outlook"] * 9, 9), "outlook"
     return None
 
 
-def _classify(evals):
-    """Returns (another_chance_eval_or_None, (move_on_eval, kind) or None)."""
-    chance = [e for e in evals if _is_chance(e)]
-    best_chance = max(chance, key=lambda e: e["gap"]) if chance else None
-
+def _pick_move_on(evals, level, exclude=None):
+    """(eval, kind) of the player to move on at this level, or None."""
     candidates = []  # (severity, eval, kind)
     for e in evals:
-        if e is best_chance:
+        if e is exclude:
             continue
-        signal = _move_on_signal(e)
+        signal = _move_on_signal(e, level)
         if signal:
             candidates.append((signal[0], e, signal[1]))
     if not candidates:
-        return best_chance, None
+        return None
 
     worst = max(candidates, key=lambda c: c[0])
     close = [c for c in candidates if c[2] == worst[2] and c[0] >= worst[0] - MOVE_ON_PRICE_TOLERANCE]
     pick = max(close, key=lambda c: (float(c[1]["player"].price), c[0]))
-    return best_chance, (pick[1], pick[2])
+    return pick[1], pick[2]
+
+
+def _weak_fallback(evals):
+    """Last resort when no card was found by the strict or medium rules: ONE mild card, chosen by
+    ranking the squad against itself instead of by thresholds. Returns (chance, move_on)."""
+    rated = [
+        e for e in evals
+        if e.get("engine") and e["availability"]["multiplier"] >= CHANCE_MIN_AVAILABILITY
+    ]
+    below = [e for e in rated if e["engine"]["score"] < WEAK_MOVE_ON_MAX_SCORE]
+    if below:
+        worst = min(below, key=lambda e: e["engine"]["score"])
+        return None, (worst, "watch", "mild")
+
+    chance = [
+        e for e in evals
+        if e["mpg"] >= WEAK_CHANCE_MIN_MPG
+        and e["availability"]["multiplier"] >= WEAK_CHANCE_MIN_AVAILABILITY
+        and e["gap"] > 0
+    ]
+    if chance:
+        return (max(chance, key=lambda e: e["gap"]), "mild"), None
+    return None, None
+
+
+def _classify(evals):
+    """Returns (chance, move_on):
+    chance   = (eval, strength) or None
+    move_on  = (eval, kind, strength) or None
+    strength is "strong" (strict rules), "moderate" (medium rules) or "mild" (weak fallback, which only
+    runs when neither card was found and then returns a single card)."""
+    chance = None
+    for level, strength in TIER_STRENGTH:
+        found = [e for e in evals if _is_chance(e, level)]
+        if found:
+            chance = (max(found, key=lambda e: e["gap"]), strength)
+            break
+
+    move_on = None
+    exclude = chance[0] if chance else None
+    for level, strength in TIER_STRENGTH:
+        pick = _pick_move_on(evals, level, exclude)
+        if pick:
+            move_on = (pick[0], pick[1], strength)
+            break
+
+    if chance or move_on:
+        return chance, move_on
+    return _weak_fallback(evals)
 
 
 def slump_stats(players, gameweek, window_ids):
@@ -704,6 +778,18 @@ TEMPLATES = {
         "yet has just {cs} clean sheets and {pts} points. His defensive numbers rank {under_label}, "
         "so the points should catch up."
     ),
+    ("another_chance", "mild_attack"): (
+        "{name} has {xgi:.1f} xGI over the last {n} gameweeks ({ga} goals and assists) for {pts} points. "
+        "His numbers are a little better than his points, so a small bounce back is possible."
+    ),
+    ("another_chance", "mild_defence"): (
+        "{name} has conceded only {xgc:.1f} xGC over the last {n} gameweeks, with {cs} clean sheets and "
+        "{pts} points. His defensive numbers are slightly better than his points, so a small bounce back is possible."
+    ),
+    ("move_on", "watch"): (
+        "{name} has {recent_pts} points in his last {games} games ({ppg:.1f} a game{points_note}). "
+        "Nothing alarming yet, but his outlook is the weakest in your starting XI, so keep an eye on him."
+    ),
     ("move_on", "unavailable"): "{name} is not available ({news}). Consider a replacement.",
     ("move_on", "minutes"): (
         "{name} is averaging only {mpg:.0f} minutes per gameweek lately, "
@@ -848,7 +934,8 @@ def _facts(ev, window_len):
 
 def _template_reason(title_key, kind, ev, window_len):
     if title_key == "another_chance":
-        key = (title_key, "attack" if ev["player"].position in ("MID", "FWD") else "defence")
+        side = "attack" if ev["player"].position in ("MID", "FWD") else "defence"
+        key = (title_key, f"mild_{side}" if kind == "mild" else side)
     else:
         key = (title_key, kind)
     return TEMPLATES[key].format(**_facts(ev, window_len))
@@ -914,7 +1001,7 @@ Respond ONLY with valid JSON: {{"reason": "<2-3 sentences>"}}"""
 # ---------------------------------------------------------------------------
 # Output
 # ---------------------------------------------------------------------------
-def _insight(title_key, kind, ev, window_ids, lang, replacement=None, replacement_options=None):
+def _insight(title_key, kind, ev, window_ids, lang, replacement=None, replacement_options=None, strength="strong"):
     player = ev["player"]
     n = len(window_ids)
     base = _template_reason(title_key, kind, ev, n)
@@ -925,6 +1012,7 @@ def _insight(title_key, kind, ev, window_ids, lang, replacement=None, replacemen
         "type": title_key,
         "title": TITLES[title_key],
         "kind": kind,
+        "strength": strength,       # strong / moderate / mild: which rule tier found this player
         "player": {
             "id": player.id,
             "name": player.web_name,
@@ -981,7 +1069,7 @@ def get_squad_insights(team_input, lang="en"):
     slots, picks_name, pending, bank = _load_squad(team_id, gameweek)
 
     squad_key = hashlib.sha1(",".join(f"{k}:{v}" for k, v in sorted(slots.items())).encode()).hexdigest()[:12]
-    cache_key = f"squad:insights:v10:{team_id}:{squad_key}:{gameweek.fpl_id}:{lang}"
+    cache_key = f"squad:insights:v11:{team_id}:{squad_key}:{gameweek.fpl_id}:{lang}"
     try:
         cached = redis_client.get(cache_key)
         if cached:
@@ -995,11 +1083,16 @@ def get_squad_insights(team_input, lang="en"):
 
     insights = []
     if chance:
-        insights.append(_insight("another_chance", "underperforming", chance, window_ids, lang))
+        chance_ev, chance_strength = chance
+        insights.append(_insight(
+            "another_chance", "mild" if chance_strength == "mild" else "underperforming",
+            chance_ev, window_ids, lang, strength=chance_strength,
+        ))
     if move_on:
-        options = _suggest_replacements(move_on[0], squad_players, gameweek, window_ids, env, bank)
-        insights.append(_insight("move_on", move_on[1], move_on[0], window_ids, lang,
-                                 options[0] if options else None, options))
+        move_ev, move_kind, move_strength = move_on
+        options = _suggest_replacements(move_ev, squad_players, gameweek, window_ids, env, bank)
+        insights.append(_insight("move_on", move_kind, move_ev, window_ids, lang,
+                                 options[0] if options else None, options, strength=move_strength))
     result = {
         "gameweek": gameweek.name,
         "squad_gameweek": picks_name,
@@ -1039,7 +1132,7 @@ def debug_squad_evals(team_input):
         print(f"{p.web_name:<14}{p.position}  {head}  xGI-pct={e['underlying']:5.1f} pts-pct={e['actual']:5.1f} "
               f"mpg={e['mpg']:5.1f} avail={e['availability']['multiplier']}  -> {signal[1] if signal else '-'}")
         print(f"{'':<17}{axes} | next: {_format_fixtures(e['fixture']['fixtures']) or '-'}")
-    print("chance :", chance and chance["player"].web_name)
-    print("move_on:", move_on and (move_on[0]["player"].web_name, move_on[1]))
+    print("chance :", chance and (chance[0]["player"].web_name, chance[1]))
+    print("move_on:", move_on and (move_on[0]["player"].web_name, move_on[1], move_on[2]))
     if move_on:
         print("replacements:", _suggest_replacements(move_on[0], squad_players, gameweek, window_ids, env, bank))

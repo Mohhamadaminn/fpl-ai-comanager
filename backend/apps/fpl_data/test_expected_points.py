@@ -441,7 +441,7 @@ class CaptainTests(SimpleTestCase):
         no_cap = xp.xi_estimate(xi, None)
         self.assertEqual(no_cap["high"] - no_cap["low"], 5)
         self.assertFalse(no_cap["includes_captain"])
-        self.assertGreaterEqual(xp.xi_estimate([entry(1, 0.0)], None)["low"], 0)
+        self.assertIsNone(xp.xi_estimate([entry(1, 0.0)], None))       # incomplete XI: no misleading range
 
 
 class VerdictTests(SimpleTestCase):
@@ -583,7 +583,7 @@ class LoadDatasetAndSquadTests(TestCase):
         slots[6] = 12   # one benched player
         with mock.patch("apps.fpl_data.squad_insights._load_squad", return_value=(slots, "Gameweek 8", 1, 0.5)), \
                 mock.patch("apps.fpl_data.squad_insights.redis_client") as redis, \
-                mock.patch.object(xp, "TOP_TEAMS", 1):    # this league has only 4 teams
+                mock.patch.object(xp, "XI_SIZE", 1), mock.patch.object(xp, "TOP_TEAMS", 1):    # this league has only 4 teams
             redis.get.return_value = None
             result = xp.get_squad_expected_points("https://fantasy.premierleague.com/entry/123456/event/8")
         self.assertEqual(result["gameweek"]["id"], 9)
@@ -614,7 +614,7 @@ class LoadDatasetAndSquadTests(TestCase):
         slots[6] = 12
         with mock.patch("apps.fpl_data.squad_insights._load_squad", return_value=(slots, "Gameweek 8", 0, 0.5)), \
                 mock.patch("apps.fpl_data.squad_insights.redis_client") as redis, \
-                mock.patch.object(xp, "TOP_TEAMS", 1):
+                mock.patch.object(xp, "XI_SIZE", 1), mock.patch.object(xp, "TOP_TEAMS", 1):
             redis.get.return_value = None
             result = xp.get_squad_expected_points("123456")
         block = result["recommended_captain"]
@@ -632,13 +632,22 @@ class LoadDatasetAndSquadTests(TestCase):
             self.assertIsInstance(e["faces_top_team"], bool)
             self.assertIn("opponent_id", e["fixtures"][0])
 
+    def test_a_failing_engine_does_not_break_the_lineup(self):
+        slots = {p.fpl_id: i + 1 for i, p in enumerate(self.players)}
+        with mock.patch("apps.fpl_data.squad_insights._load_squad", return_value=(slots, "Gameweek 8", 0, 0.5)), \
+                mock.patch("apps.fpl_data.squad_insights._collect_evals", side_effect=RuntimeError("boom")), \
+                mock.patch("apps.fpl_data.squad_insights.redis_client") as redis:
+            redis.get.return_value = None
+            result = xp.get_squad_expected_points("123456")
+        self.assertTrue(all(e["verdict"]["label"] for e in result["starting_xi"]))
+
     def test_verdicts_use_the_engine_views(self):
         slots = {p.fpl_id: i + 1 for i, p in enumerate(self.players)}
         views = {p.id: (80.0, 90.0, "slump" if p.fpl_id == 1 else None) for p in self.players}     # player 1 is in a slump
         with mock.patch("apps.fpl_data.squad_insights._load_squad", return_value=(slots, "Gameweek 8", 0, 0.5)), \
                 mock.patch("apps.fpl_data.squad_insights.redis_client") as redis, \
                 mock.patch.object(xp, "_engine_views", return_value=views), \
-                mock.patch.object(xp, "TOP_TEAMS", 1):
+                mock.patch.object(xp, "XI_SIZE", 1), mock.patch.object(xp, "TOP_TEAMS", 1):
             redis.get.return_value = None
             result = xp.get_squad_expected_points("123456")
         labels = {e["id"]: e["verdict"]["label"] for e in result["starting_xi"]}
@@ -650,7 +659,7 @@ class LoadDatasetAndSquadTests(TestCase):
         slots = {p.fpl_id: i + 1 for i, p in enumerate(self.players)}
         with mock.patch("apps.fpl_data.squad_insights._load_squad", return_value=(slots, "Gameweek 8", 0, 0.5)), \
                 mock.patch("apps.fpl_data.squad_insights.redis_client") as redis, \
-                mock.patch.object(xp, "TOP_TEAMS", 4):    # all four teams count as "top": nobody non-prime qualifies
+                mock.patch.object(xp, "XI_SIZE", 1), mock.patch.object(xp, "TOP_TEAMS", 4):    # all four teams count as "top": nobody non-prime qualifies
             redis.get.return_value = None
             result = xp.get_squad_expected_points("123456")
         self.assertIsNone(result["recommended_captain"])

@@ -1647,7 +1647,7 @@
   grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
   gap: 4px 14px;
-  margin: 0 0 16px;
+  margin: 16px 0 0;
   padding: 14px 16px;
   border: 1px solid var(--accent-border);
   border-radius: 14px;
@@ -1664,7 +1664,7 @@
 .cap-also { grid-column: 1 / -1; margin: 8px 0 0; color: var(--text); font-size: 12px; }
 .cap-link { padding: 0; border: 0; background: none; color: var(--text-h); font: inherit; font-weight: 600; text-decoration: underline dotted; cursor: pointer; }
 .cap-link:hover { color: var(--accent); }
-.cap-note { margin: 0 0 16px; padding: 12px 14px; border: 1px dashed var(--border-strong); border-radius: 12px; color: var(--text); font-size: 13px; }
+.cap-note { margin: 16px 0 0; padding: 12px 14px; border: 1px dashed var(--border-strong); border-radius: 12px; color: var(--text); font-size: 13px; }
 
 /* Pitch */
 .pitch {

@@ -857,6 +857,7 @@ def _team_strength_ratings(target):
     return _ratings_for(target, window) if window else _team_ratings(target)
 
 
+XI_SIZE = 11
 XI_RANGE_WIDTH = 5           # the shown range for the whole XI is exactly this many points wide
 RECENT_POINTS_SHOWN = 5
 
@@ -864,6 +865,8 @@ RECENT_POINTS_SHOWN = 5
 def xi_estimate(starters, captain):
     """A rough points range for the starting XI: the sum of the players' predicted points (the captain
     counted twice) with a fixed, narrow width. It is a guide, not a promise: real weeks swing more."""
+    if len(starters) < XI_SIZE:
+        return None    # an incomplete XI (players not matched yet) would give a misleadingly low range
     mean = sum(e["xp"] for e in starters) + (captain["xp"] if captain else 0.0)
     low = max(0, round(mean - XI_RANGE_WIDTH / 2))
     return {"low": low, "high": low + XI_RANGE_WIDTH, "includes_captain": captain is not None}
@@ -886,7 +889,9 @@ def _engine_views(players, target):
         return {}
     try:
         evals, _env = _collect_evals(players, target, window)
-    except ValueError:
+    except Exception:
+        # the words are a layer on top of the lineup: if the engine cannot run, the lineup still shows
+        logger.warning("Squad engine views failed; verdicts fall back to availability only", exc_info=True)
         return {}
     out = {}
     for ev in evals:

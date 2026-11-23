@@ -155,9 +155,6 @@ function SquadXp({ data }) {
         <p>A guide for the week, not a forecast. Tap a player for details; the decisions are yours.</p>
       </header>
 
-      {data.recommended_captain && <CaptainCard captain={data.recommended_captain} onSelect={select} />}
-      {!data.recommended_captain && data.captain_note && <p className="cap-note">{data.captain_note}</p>}
-
       <div className="pitch" ref={pitchRef}>
         {data.formation && <span className="pitch-formation">{data.formation}</span>}
         <div className="pitch-rows">
@@ -195,15 +192,20 @@ function SquadXp({ data }) {
         )}
       </div>
 
+      {estimate && (
+        <div className="xp-total">
+          <span>Starting XI estimate</span>
+          <strong>
+            {estimate.low}–{estimate.high} points
+          </strong>
+          <small>{estimate.includes_captain ? "Captain counted twice. " : ""}Real weeks swing more than this.</small>
+        </div>
+      )}
+
       {selected && <PlayerDetail player={selected} onClose={close} innerRef={detailRef} />}
 
-      <div className="xp-total">
-        <span>Starting XI estimate</span>
-        <strong>
-          {estimate.low}–{estimate.high} points
-        </strong>
-        <small>{estimate.includes_captain ? "Captain counted twice. " : ""}Real weeks swing more than this.</small>
-      </div>
+      {data.recommended_captain && <CaptainCard captain={data.recommended_captain} onSelect={select} />}
+      {!data.recommended_captain && data.captain_note && <p className="cap-note">{data.captain_note}</p>}
 
       <p className="xp-footnote">
         {data.lineup_note} Based on gameweeks up to {data.data_through_gameweek}.

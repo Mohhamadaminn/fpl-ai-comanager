@@ -24,7 +24,7 @@ def sync_bootstrap_task():
     sync_bootstrap_data()
 
 
-@shared_task
+@shared_task(**FPL_SYNC_RETRY)
 def sync_live_stats_task():
     current_gw = Gameweek.objects.filter(is_current=True).first()
     if current_gw:

@@ -79,6 +79,7 @@ def _int_or_none(value):
     return value if isinstance(value, int) else None
 
 
+@transaction.atomic
 def sync_bootstrap_data():
     response = requests.get(f"{FPL_BASE_URL}/bootstrap-static/", timeout=FPL_TIMEOUT)
     response.raise_for_status()

@@ -23,7 +23,7 @@ class ComparePlayersRequestSerializer(serializers.Serializer):
 class TeamListSerializer(serializers.ModelSerializer):
     class Meta:
         model = Team
-        fields = ["id", "name", "short_name"]
+        fields = ["id", "name", "short_name", "code"]
 
 
 class SquadInsightsRequestSerializer(serializers.Serializer):

@@ -15,7 +15,7 @@ function Footer() {
     <footer className="site-footer">
       <div className="site-footer-inner">
         <p className="site-footer-desc">
-          <strong>FPL Vision</strong> — Make Smarter FPL Decisions.
+          <strong>PuckFPL</strong> — Stats to help you see the picture. The decisions stay yours.
         </p>
 
         {links.length > 0 && (
@@ -38,11 +38,12 @@ function Footer() {
         </p>
 
         <p className="site-footer-disclaimer">
-          FPL Vision is an independent, unofficial project. It is not affiliated with, endorsed
+          PuckFPL is an independent, unofficial project. It is not affiliated with, endorsed
           by or connected to the Premier League, Fantasy Premier League or any club or player.
           All names, logos, player photos and trademarks belong to their respective owners.
-          Data comes from the official FPL API. Scores and AI-written verdicts are for
-          information only; they can be wrong and do not guarantee FPL results.
+          Data comes from the official FPL API. PuckFPL is a helper tool and does not replace
+          your own decisions. Scores and AI-written verdicts are for information only; they
+          can be wrong and do not guarantee FPL results.
         </p>
       </div>
     </footer>

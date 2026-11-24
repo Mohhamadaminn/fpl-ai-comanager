@@ -48,23 +48,54 @@ function StatChips({ insight }) {
 }
 
 
-function ReplacementOptions({ options }) {
-  const [open, setOpen] = useState(false);
-  if (!options || options.length === 0) return null;
+function formatMoney(value) {
+  return `£${Number(value).toFixed(1)}m`;
+}
+
+// How the price ceiling was reached, in words the person can check against their own squad.
+function budgetExplanation(playerName, playerPrice, budget, bank) {
+  if (budget == null) {
+    return `Replacements are in the same price range as ${playerName}.`;
+  }
+  if (bank == null) {
+    return `Up to ${formatMoney(budget)}: ${playerName}'s price. Your bank balance wasn't available, so nothing extra is added.`;
+  }
+  return `Up to ${formatMoney(budget)}: ${playerName}'s price (${formatMoney(playerPrice)}) plus ${formatMoney(bank)} in your bank. Pricier players aren't included.`;
+}
+
+function ReplacementModal({ player, options, budget, bank, onClose }) {
+  useEffect(() => {
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const onKey = (e) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.body.style.overflow = previous;
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [onClose]);
 
   return (
-    <div className="squad-replacement">
-      <button
-        type="button"
-        className="squad-replacement-toggle"
-        onClick={() => setOpen((v) => !v)}
-        aria-expanded={open}
+    <div className="picker-overlay" onClick={onClose}>
+      <div
+        className="picker-modal replacement-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-label={`Replacements for ${player.name}`}
+        onClick={(e) => e.stopPropagation()}
       >
-        {open ? "Hide Replacement" : "Show Replacement"}
-      </button>
+        <div className="picker-header">
+          <h3>Replacements for {player.name}</h3>
+          <button className="picker-close" aria-label="Close" onClick={onClose}>✕</button>
+        </div>
 
-      {open && (
-        <ul className="squad-replacement-list">
+        <p className="replacement-modal-note">
+          {budgetExplanation(player.name, player.price, budget, bank)}
+        </p>
+
+        <ul className="squad-replacement-list replacement-modal-list">
           {options.map((option) => (
             <li key={option.id} className="squad-replacement-item">
               <PlayerPhoto
@@ -89,6 +120,48 @@ function ReplacementOptions({ options }) {
             </li>
           ))}
         </ul>
+      </div>
+    </div>
+  );
+}
+
+function ReplacementOptions({ insight, options }) {
+  const [open, setOpen] = useState(false);
+  const { player, replacement_budget: budget, bank } = insight;
+
+  if (!options || options.length === 0) {
+    if (budget == null) return null;
+    return (
+      <div className="squad-replacement">
+        <p className="squad-replacement-range">
+          No clearly better replacement up to {formatMoney(budget)}.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="squad-replacement">
+      <button
+        type="button"
+        className="squad-replacement-toggle"
+        onClick={() => setOpen(true)}
+        aria-haspopup="dialog"
+      >
+        Show Replacements
+      </button>
+      <span className="squad-replacement-range">
+        {budget != null ? `Same price range · up to ${formatMoney(budget)}` : "Same price range"}
+      </span>
+
+      {open && (
+        <ReplacementModal
+          player={player}
+          options={options}
+          budget={budget}
+          bank={bank}
+          onClose={() => setOpen(false)}
+        />
       )}
     </div>
   );
@@ -154,7 +227,7 @@ function SquadCheck() {
       : null;
 
   return (
-    <section className="squad-check">
+    <section className="squad-check" id="squad-check">
       <header className="squad-check-header">
         <span className="compare-eyebrow">Squad Check</span>
         <h2>How is your squad doing?</h2>
@@ -247,6 +320,7 @@ function SquadCheck() {
                   <p className="squad-card-reason">{insight.reason}</p>
                   <StatChips insight={insight} />
                   <ReplacementOptions
+                    insight={insight}
                     options={
                       insight.replacement_options?.length
                         ? insight.replacement_options

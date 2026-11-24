@@ -1,34 +1,41 @@
 /* ============================================================
-   FPL Vision — Dark theme
-   Palette: Dark blue #12304A · Turquoise #2EC4B6 · near-black
+   PuckFPL — Dark theme
+   Palette taken from the logo: deep navy #020f2c · electric cyan #00d3fe
+   · blue #1f8bff · violet #a78bfa (antenna tips) · amber #ff9f1c (the eye)
+   Fonts: Russo One (headings, close to the logo lettering) + Inter (body)
    ============================================================ */
 
 :root {
   /* Backgrounds */
-  --bg: #0b1420;
-  --bg-alt: #0f1c2b;
-  --code-bg: #152536;
+  --bg: #020f2c;
+  --bg-alt: #061a3f;
+  --code-bg: #0a2250;
 
   /* Text */
-  --text: #94a3b8;
-  --text-h: #e2e8f0;
+  --text: #9db4d6;
+  --text-h: #e8f1ff;
 
   /* Borders & surfaces */
-  --border: #1e3a50;
-  --border-strong: #2a4a66;
+  --border: #14336b;
+  --border-strong: #1f4a94;
 
-  /* Accent — turquoise */
-  --accent: #2EC4B6;
-  --accent-bg: rgba(46, 196, 182, 0.12);
-  --accent-border: rgba(46, 196, 182, 0.32);
-  --accent-glow: 0 4px 28px rgba(46, 196, 182, 0.25);
+  /* Accent — electric cyan from the logo */
+  --accent: #00d3fe;
+  --accent-bg: rgba(0, 211, 254, 0.12);
+  --accent-border: rgba(0, 211, 254, 0.34);
+  --accent-glow: 0 4px 28px rgba(0, 211, 254, 0.28);
+
+  /* Supporting logo colours */
+  --blue: #1f8bff;
+  --violet: #a78bfa;
+  --amber: #ff9f1c;
 
   /* Shadows */
-  --shadow: 0 4px 28px rgba(0, 0, 0, 0.35);
+  --shadow: 0 4px 28px rgba(0, 0, 0, 0.4);
 
   /* Side colours for comparison */
-  --side-a: #2EC4B6;   /* turquoise */
-  --side-b: #38bdf8;   /* bright blue */
+  --side-a: #00d3fe;   /* cyan */
+  --side-b: #a78bfa;   /* violet */
 }
 
 
@@ -53,10 +60,10 @@
   position: sticky;
   top: 0;
   z-index: 50;
-  background: rgba(11, 20, 32, 0.88);
+  background: rgba(2, 15, 44, 0.88);
   backdrop-filter: blur(12px);
   border-bottom: 1px solid var(--border);
-  padding: 14px 24px;
+  padding: 10px 24px;
 }
 
 .site-header-inner {
@@ -70,18 +77,16 @@
 .site-logo {
   display: flex;
   align-items: center;
-  gap: 8px;
   background: none;
   border: none;
   cursor: pointer;
-  font-weight: 700;
-  color: var(--text-h);
-  font-size: 17px;
   padding: 0;
 }
 
-.site-logo-mark {
-  color: var(--accent);
+.site-logo-img {
+  display: block;
+  height: 38px;
+  width: auto;
 }
 
 .site-nav {
@@ -157,7 +162,7 @@
 .hero {
   padding: 72px 24px 64px;
   background:
-    radial-gradient(ellipse 800px 400px at 80% 0%, rgba(46, 196, 182, 0.10), transparent),
+    radial-gradient(ellipse 800px 400px at 80% 0%, rgba(0, 211, 254, 0.10), transparent),
     var(--bg);
 }
 
@@ -208,7 +213,7 @@
   border: none;
   border-radius: 10px;
   background: var(--accent);
-  color: #0b1420;
+  color: #020f2c;
   font-size: 15px;
   font-weight: 600;
   cursor: pointer;
@@ -218,7 +223,33 @@
 .hero-cta:hover {
   box-shadow: var(--accent-glow);
   transform: translateY(-1px);
-  background: #25a89c;
+  background: #00b6dc;
+}
+
+/* Short "helper, not a decision-maker" line under the hero CTA */
+.hero-note {
+  margin-top: 22px;
+  padding: 10px 14px;
+  max-width: 460px;
+  border-left: 3px solid var(--amber);
+  border-radius: 0 8px 8px 0;
+  background: rgba(255, 159, 28, 0.08);
+  color: var(--text);
+  font-size: 13.5px;
+  line-height: 150%;
+}
+
+.hero-note strong {
+  color: var(--text-h);
+  font-weight: 600;
+}
+
+@media (max-width: 860px) {
+  .hero-note {
+    margin-left: auto;
+    margin-right: auto;
+    text-align: left;
+  }
 }
 
 .hero-visual {
@@ -409,7 +440,7 @@
   border: none;
   border-radius: 10px;
   background: var(--accent);
-  color: #0b1420;
+  color: #020f2c;
   font-size: 15px;
   font-weight: 600;
   cursor: pointer;
@@ -419,7 +450,7 @@
 .compare-button:hover:not(:disabled) {
   box-shadow: var(--accent-glow);
   transform: translateY(-1px);
-  background: #25a89c;
+  background: #00b6dc;
 }
 
 .compare-button:disabled {
@@ -437,8 +468,8 @@
   width: 14px;
   height: 14px;
   border-radius: 50%;
-  border: 2px solid rgba(11, 20, 32, 0.3);
-  border-top-color: #0b1420;
+  border: 2px solid rgba(2, 15, 44, 0.3);
+  border-top-color: #020f2c;
   animation: spin 0.7s linear infinite;
 }
 
@@ -540,7 +571,7 @@
   left: 50%;
   transform: translateX(-50%);
   background: var(--accent);
-  color: #0b1420;
+  color: #020f2c;
   font-size: 11px;
   font-weight: 700;
   padding: 4px 14px;
@@ -748,7 +779,7 @@
 .picker-tab.active {
   background: var(--accent);
   border-color: var(--accent);
-  color: #0b1420;
+  color: #020f2c;
   font-weight: 600;
 }
 
@@ -835,88 +866,99 @@
 }
 
 
-/* ---- Telegram promo ---- */
+/* ---- Disclaimer (helper, not a decision-maker) ---- */
 
-.telegram-promo {
-  padding: 72px 24px;
+.disclaimer {
+  padding: 80px 24px;
   text-align: center;
-  background: var(--bg);
+  background:
+    radial-gradient(ellipse 700px 320px at 50% 0%, rgba(0, 211, 254, 0.08), transparent),
+    var(--bg);
+  border-top: 1px solid var(--border);
 }
 
-.telegram-promo-inner {
-  max-width: 560px;
+.disclaimer-inner {
+  max-width: 860px;
   margin: 0 auto;
 }
 
-.telegram-promo-icon {
-  width: 72px;
-  height: 72px;
-  margin: 0 auto 20px;
-  border-radius: 50%;
-  background: var(--accent-bg);
-  border: 1px solid var(--accent-border);
-  color: var(--accent);
-  display: flex;
-  align-items: center;
-  justify-content: center;
+.disclaimer-logo {
+  display: block;
+  width: min(300px, 70%);
+  height: auto;
+  margin: 0 auto 28px;
+  filter: drop-shadow(0 6px 28px rgba(0, 211, 254, 0.22));
 }
 
-.telegram-promo h2 {
-  margin-bottom: 10px;
+.disclaimer-eyebrow {
+  display: inline-block;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--amber);
+  background: rgba(255, 159, 28, 0.1);
+  border: 1px solid rgba(255, 159, 28, 0.36);
+  padding: 5px 12px;
+  border-radius: 999px;
+  margin-bottom: 18px;
+}
+
+.disclaimer h2 {
+  margin-bottom: 14px;
   color: var(--text-h);
 }
 
-.telegram-promo-sub {
+.disclaimer-lead {
+  max-width: 620px;
+  margin: 0 auto 36px;
   color: var(--text);
-  margin-bottom: 28px;
+  font-size: 17px;
+  line-height: 160%;
 }
 
-.telegram-promo-features {
+.disclaimer-lead strong {
+  color: var(--text-h);
+  font-weight: 600;
+}
+
+.disclaimer-points {
   list-style: none;
   padding: 0;
-  margin: 0 0 32px;
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
   text-align: left;
-  display: inline-flex;
-  flex-direction: column;
-  gap: 10px;
 }
 
-.telegram-promo-features li {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  color: var(--text-h);
-  font-size: 14px;
+.disclaimer-points li {
+  padding: 20px 20px 22px;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 14px;
 }
 
-.telegram-promo-check {
+.disclaimer-points h3 {
+  margin-bottom: 8px;
+  font-size: 16px;
+  letter-spacing: 0.3px;
   color: var(--accent);
-  font-weight: 700;
-  flex-shrink: 0;
 }
 
-.telegram-promo-cta {
-  display: inline-block;
-  padding: 13px 30px;
-  background: var(--accent);
-  color: #0b1420;
-  font-weight: 600;
-  font-size: 15px;
-  border-radius: 10px;
-  text-decoration: none;
-  transition: box-shadow 0.25s ease, transform 0.15s ease, background 0.2s ease;
-}
-
-.telegram-promo-cta:hover {
-  box-shadow: var(--accent-glow);
-  transform: translateY(-1px);
-  background: #25a89c;
-}
-
-.telegram-promo-pending {
+.disclaimer-points p {
   color: var(--text);
-  font-size: 13px;
-  opacity: 0.7;
+  font-size: 14px;
+  line-height: 155%;
+}
+
+@media (max-width: 860px) {
+  .disclaimer {
+    padding: 56px 20px;
+  }
+  .disclaimer-points {
+    grid-template-columns: 1fr;
+  }
 }
 
 
@@ -1049,7 +1091,7 @@
 
 .compare-horizon-option.active {
   background: var(--accent);
-  color: #0b1420;
+  color: #020f2c;
   font-weight: 700;
 }
 
@@ -1159,7 +1201,7 @@
   padding: 4px 14px;
   border-radius: 999px;
   white-space: nowrap;
-  color: #0b1420;
+  color: #020f2c;
   background: var(--accent);
 }
 
@@ -1418,12 +1460,13 @@
   top: calc(100% + 6px);
   left: 0;
   min-width: 100%;
-  max-height: 240px;
+  max-width: 82vw;
+  max-height: 280px;
   overflow-y: auto;
   margin: 0;
   padding: 4px;
   list-style: none;
-  background: #0f1b2d;
+  background: #071a40;
   border: 1px solid var(--accent-border);
   border-radius: 10px;
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
@@ -1431,6 +1474,9 @@
 }
 
 .cs-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   padding: 8px 10px;
   font-size: 13px;
   color: var(--text);
@@ -1440,6 +1486,28 @@
 }
 .cs-option:hover { background: var(--accent-bg); color: var(--text-h); }
 .cs-option.selected { color: var(--accent); background: var(--accent-bg); }
+.cs-option-label { flex: 1; }
+.cs-option-hint { color: var(--text); font-size: 11px; opacity: 0.7; letter-spacing: 0.4px; }
+.cs-trigger .team-badge, .cs-option .team-badge { flex-shrink: 0; object-fit: contain; }
+
+/* ---- Replacements dialog (Squad Check) ---- */
+.replacement-modal { max-width: 520px; }
+.replacement-modal-note {
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  border-left: 3px solid var(--accent);
+  border-radius: 0 8px 8px 0;
+  background: var(--accent-bg);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 150%;
+}
+.replacement-modal-list {
+  margin: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  animation: none;
+}
 
 
 
@@ -1448,6 +1516,17 @@
   margin-top: 18px;
   padding-top: 16px;
   border-top: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+
+.squad-replacement-range {
+  margin: 0;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 140%;
 }
 
 .squad-replacement-toggle {
@@ -1574,7 +1653,7 @@
   .hero-content p { font-size: 16px; margin-bottom: 24px; }
   .compare-page { padding: 48px 20px 64px; }
   .compare-header p { margin-bottom: 32px; }
-  .telegram-promo { padding: 56px 20px; }
+  .disclaimer { padding: 48px 20px; }
   .site-footer { padding: 28px 20px; }
 
   .compare-card { padding: 24px 18px; }
@@ -1651,7 +1730,7 @@
   padding: 14px 16px;
   border: 1px solid var(--accent-border);
   border-radius: 14px;
-  background: linear-gradient(135deg, var(--accent-bg), rgba(56, 189, 248, 0.06));
+  background: linear-gradient(135deg, var(--accent-bg), rgba(167, 139, 250, 0.08));
 }
 
 .cap-photo { width: 56px; height: 56px; border-radius: 50%; object-fit: cover; object-position: top; background: var(--code-bg); border: 2px solid var(--accent); }
@@ -1747,7 +1826,7 @@
   width: 56px;
   height: 56px;
   border-radius: 50%;
-  background: #0f1c2b;
+  background: #071a40;
   box-shadow: 0 0 0 3px var(--ring, rgba(255, 255, 255, 0.55)), 0 6px 12px rgba(0, 0, 0, 0.45);
   transition: box-shadow 0.15s ease;
 }
@@ -1767,7 +1846,7 @@
 .pp--great .pp-shirt { box-shadow: 0 0 0 3px var(--ring), 0 0 16px rgba(250, 204, 21, 0.65), 0 6px 12px rgba(0, 0, 0, 0.45); }
 .pp--selected .pp-shirt { box-shadow: 0 0 0 4px #fff, 0 0 20px rgba(255, 255, 255, 0.8), 0 6px 12px rgba(0, 0, 0, 0.45); }
 .pp--selected .pp-plate { background: #fff; }
-.pp--selected .pp-plate strong, .pp--selected .pp-plate small { color: #0b1420; }
+.pp--selected .pp-plate strong, .pp--selected .pp-plate small { color: #020f2c; }
 
 .pp-armband {
   position: absolute;
@@ -1777,7 +1856,7 @@
   height: 20px;
   border-radius: 50%;
   background: #facc15;
-  color: #0b1420;
+  color: #020f2c;
   font-size: 11px;
   font-weight: 800;
   line-height: 20px;
@@ -1795,7 +1874,7 @@
   height: 18px;
   border-radius: 50%;
   background: #fbbf24;
-  color: #0b1420;
+  color: #020f2c;
   font-size: 11px;
   font-weight: 800;
   line-height: 18px;
@@ -1811,7 +1890,7 @@
   max-width: 100%;
   padding: 2px 7px;
   border-radius: 8px;
-  background: rgba(11, 20, 32, 0.82);
+  background: rgba(2, 15, 44, 0.82);
   backdrop-filter: blur(2px);
   line-height: 1.2;
   transition: background 0.15s ease;
@@ -1824,7 +1903,7 @@
   padding: 1px 8px;
   border-radius: 999px;
   background: var(--ring, #fff);
-  color: #0b1420;
+  color: #020f2c;
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.02em;

@@ -6,6 +6,7 @@ class Team(models.Model):
     fpl_id = models.PositiveIntegerField(unique=True)  # 'id' from FPL API
     name = models.CharField(max_length=100)
     short_name = models.CharField(max_length=10)
+    code = models.PositiveIntegerField(null=True, blank=True)  # 'code' from FPL API; used for the club badge
 
     strength_overall_home = models.PositiveSmallIntegerField(null=True, blank=True)
     strength_overall_away = models.PositiveSmallIntegerField(null=True, blank=True)

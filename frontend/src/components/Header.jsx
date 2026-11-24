@@ -14,12 +14,13 @@ function Header() {
     <header className="site-header">
       <div className="site-header-inner">
         <button className="site-logo" onClick={() => scrollToId("top")}>
-          <span className="site-logo-mark">⚡</span> FPL Vision
+          <img src="/logo.png" alt="PuckFPL" className="site-logo-img" width="112" height="38" />
         </button>
 
         <nav className={`site-nav ${menuOpen ? "open" : ""}`}>
           <button onClick={() => handleNavClick("top")}>Home</button>
           <button onClick={() => handleNavClick("compare")}>Player Comparison</button>
+          <button onClick={() => handleNavClick("squad-check")}>Squad Check</button>
           {/* Hidden while the Telegram bot is disabled; shows again once TELEGRAM_BOT_URL is set. */}
           {TELEGRAM_BOT_URL && (
             <button onClick={() => handleNavClick("telegram")}>Telegram Bot</button>

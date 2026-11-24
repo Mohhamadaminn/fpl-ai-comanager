@@ -91,6 +91,7 @@ def sync_bootstrap_data():
             defaults={
                 "name": team_data["name"],
                 "short_name": team_data["short_name"],
+                "code": team_data.get("code"),
                 "strength_overall_home": team_data.get("strength_overall_home"),
                 "strength_overall_away": team_data.get("strength_overall_away"),
                 "strength_attack_home": team_data.get("strength_attack_home"),

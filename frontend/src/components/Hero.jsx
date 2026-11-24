@@ -19,6 +19,11 @@ function Hero() {
           >
             Compare Players
           </button>
+
+          <div className="hero-note">
+            <strong>A helper, not a decision-maker.</strong> PuckFPL gives you stats to see
+            more clearly. Every pick is still yours.
+          </div>
         </div>
 
 

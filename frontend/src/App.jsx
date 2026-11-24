@@ -1,7 +1,7 @@
 import "./App.css";
 import Header from "./components/Header";
 import Hero from "./components/Hero";
-import TelegramPromo from "./components/TelegramPromo";
+import Disclaimer from "./components/Disclaimer";
 import Footer from "./components/Footer";
 import ComparePlayers from "./pages/ComparePlayers";
 
@@ -14,7 +14,7 @@ function App() {
         <section id="compare" className="compare-section">
           <ComparePlayers />
         </section>
-        <TelegramPromo />
+        <Disclaimer />
       </main>
       <Footer />
     </div>

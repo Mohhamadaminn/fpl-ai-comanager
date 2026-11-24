@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { searchPlayers, getTeams } from "../api/compare";
 import CustomSelect from "./CustomSelect";
+import TeamBadge from "./TeamBadge";
 import PlayerPhoto from "./PlayerPhoto";
 import { photoOf } from "../utils/photo";
 import { statusBadge } from "../utils/status";
@@ -107,7 +108,12 @@ function PlayerPickerModal({ lockedPosition, excludeId, onSelect, onClose }) {
             onChange={setTeam}
             options={[
               { value: "", label: "All Teams" },
-              ...teams.map((t) => ({ value: t.id, label: t.short_name })),
+              ...teams.map((t) => ({
+                value: t.id,
+                label: t.name,
+                triggerLabel: t.short_name,
+                icon: <TeamBadge code={t.code} />,
+              })),
             ]}
           />
 

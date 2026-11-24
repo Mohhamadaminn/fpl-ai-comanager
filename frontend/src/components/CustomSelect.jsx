@@ -30,7 +30,8 @@ function CustomSelect({ value, options, onChange }) {
         aria-expanded={open}
         onClick={() => setOpen((o) => !o)}
       >
-        <span>{current?.label}</span>
+        {current?.icon}
+        <span>{current?.triggerLabel ?? current?.label}</span>
         <svg className={`cs-chevron ${open ? "open" : ""}`} width="12" height="12" viewBox="0 0 12 12">
           <path d="M2 4l4 4 4-4" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
@@ -49,7 +50,9 @@ function CustomSelect({ value, options, onChange }) {
                 setOpen(false);
               }}
             >
-              {o.label}
+              {o.icon}
+              <span className="cs-option-label">{o.label}</span>
+              {o.hint && <span className="cs-option-hint">{o.hint}</span>}
             </li>
           ))}
         </ul>

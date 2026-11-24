@@ -726,6 +726,11 @@ def _replacement_pool(position, gameweek, window_ids, env):
     
 
 
+def _replacement_budget(out_player, bank=None):
+    """Highest price (£m) a replacement may cost: the outgoing player's price plus the bank."""
+    return float(out_player.price) + max(bank or 0.0, 0.0) + REPLACEMENT_EXTRA_BUDGET
+
+
 def _pick_replacements(out_player, out_score, squad_players, pool, bank=None, limit=None):
     """Up to `limit` pool candidates (best first) at the outgoing player's price plus the bank, who
     clearly beat him and keep the squad within the club limit. [] when nothing is clearly better."""
@@ -733,7 +738,7 @@ def _pick_replacements(out_player, out_score, squad_players, pool, bank=None, li
     squad_ids = {p.id for p in squad_players}
     club_counts = Counter(p.team_id for p in squad_players)
     club_counts[out_player.team_id] -= 1  # he leaves
-    budget = float(out_player.price) + max(bank or 0.0, 0.0) + REPLACEMENT_EXTRA_BUDGET
+    budget = _replacement_budget(out_player, bank)
     floor = max(out_score + REPLACEMENT_MIN_UPGRADE, REPLACEMENT_MIN_SCORE)
 
     options = [
@@ -1001,7 +1006,8 @@ Respond ONLY with valid JSON: {{"reason": "<2-3 sentences>"}}"""
 # ---------------------------------------------------------------------------
 # Output
 # ---------------------------------------------------------------------------
-def _insight(title_key, kind, ev, window_ids, lang, replacement=None, replacement_options=None, strength="strong"):
+def _insight(title_key, kind, ev, window_ids, lang, replacement=None, replacement_options=None, strength="strong",
+             replacement_budget=None, bank=None):
     player = ev["player"]
     n = len(window_ids)
     base = _template_reason(title_key, kind, ev, n)
@@ -1041,6 +1047,9 @@ def _insight(title_key, kind, ev, window_ids, lang, replacement=None, replacemen
         },
         "replacement": replacement,  # same-price swap (move_on only); None when nothing is clearly better
         "replacement_options": replacement_options or [],   # up to 3, best first
+        # Price ceiling used for the search (outgoing price + bank), so the page can state the range.
+        "replacement_budget": round(replacement_budget, 1) if replacement_budget is not None else None,
+        "bank": bank,               # £m in the bank after pending transfers; None when unknown
     }
 
 
@@ -1092,7 +1101,8 @@ def get_squad_insights(team_input, lang="en"):
         move_ev, move_kind, move_strength = move_on
         options = _suggest_replacements(move_ev, squad_players, gameweek, window_ids, env, bank)
         insights.append(_insight("move_on", move_kind, move_ev, window_ids, lang,
-                                 options[0] if options else None, options, strength=move_strength))
+                                 options[0] if options else None, options, strength=move_strength,
+                                 replacement_budget=_replacement_budget(move_ev["player"], bank), bank=bank))
     result = {
         "gameweek": gameweek.name,
         "squad_gameweek": picks_name,

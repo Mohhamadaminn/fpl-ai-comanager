@@ -5,7 +5,7 @@ import {
 } from "recharts";
 
 const COLOR_A = "var(--accent)";
-const COLOR_B = "#38bdf8";
+const COLOR_B = "var(--side-b)";
 
 // Below this chart width the axis labels are wrapped onto two lines and the radar is drawn
 // smaller, so labels such as "Fixture Difficulty" are not cut off at the screen edge.

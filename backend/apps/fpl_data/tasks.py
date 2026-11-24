@@ -5,7 +5,7 @@ from telegram import Bot
 import logging
 from django.conf import settings
 from .services import sync_bootstrap_data, sync_live_gameweek_stats, sync_fixtures, format_squad_performance_message
-from .models import Gameweek
+from .models import Gameweek, PlayerGameweekStat
 
 
 # The FPL API regularly errors or times out (especially while it updates after a gameweek).
@@ -22,13 +22,52 @@ FPL_SYNC_RETRY = {
 @shared_task(**FPL_SYNC_RETRY)
 def sync_bootstrap_task():
     sync_bootstrap_data()
+    for gameweek in Gameweek.objects.filter(finished=True):
+        if PlayerGameweekStat.objects.filter(gameweek=gameweek, is_final=False).exists():
+            sync_live_gameweek_stats(gameweek.fpl_id)
+
+
+def finalize_finished_gameweeks():
+    """Mark a current gameweek final once every fixture is complete.
+
+    FPL's bootstrap endpoint can lag behind the fixtures/live endpoint. Fixture
+    completion is therefore used as the local finalization signal, while the
+    regular bootstrap task remains responsible for FPL's authoritative flags.
+    """
+    current = Gameweek.objects.filter(is_current=True).first()
+    if not current:
+        return
+
+    fixtures = current.fixtures.all()
+    if not fixtures.exists() or fixtures.filter(finished=False).exists():
+        return False
+
+    current.finished = True
+    current.is_current = False
+    current.save(update_fields=["finished", "is_current"])
+
+    PlayerGameweekStat.objects.filter(gameweek=current).update(is_final=True)
+    sync_live_gameweek_stats(current.fpl_id)
+
+    next_gameweek = (
+        Gameweek.objects.filter(fpl_id__gt=current.fpl_id)
+        .order_by("fpl_id")
+        .first()
+    )
+    if next_gameweek:
+        Gameweek.objects.filter(is_next=True).exclude(pk=next_gameweek.pk).update(is_next=False)
+        next_gameweek.is_next = True
+        next_gameweek.save(update_fields=["is_next"])
+
+    return True
 
 
 @shared_task(**FPL_SYNC_RETRY)
 def sync_live_stats_task():
     current_gw = Gameweek.objects.filter(is_current=True).first()
     if current_gw:
-        sync_live_gameweek_stats(current_gw.fpl_id)
+        if not finalize_finished_gameweeks():
+            sync_live_gameweek_stats(current_gw.fpl_id)
 
 
 @shared_task(**FPL_SYNC_RETRY)
